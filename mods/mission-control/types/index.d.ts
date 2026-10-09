@@ -20,17 +20,12 @@ export type MapFile = {
   why?: string
 }
 
-export type MissionFrame = { file: string; n: number } | null
-
 declare module 'claude-code' {
   interface PluginState {
     mission: {
       nodes: MissionNode[]
       files: MapFile[]
-      view: 'who' | 'code'
-      frame: MissionFrame
       turn: number
-      now: number
     }
   }
 }

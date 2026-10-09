@@ -1,11 +1,11 @@
-// The code map page: plain HTML and CSS, written to $TMPDIR/mission-control/index.html.
-// It draws window.MAP from data.js (see mapData in map.ts). Restyle it here; nothing else
-// needs to change. Opened with ?live it re-reads data.js every second (the browser tab);
-// without it, it draws once (what headless Chrome screenshots for the terminal pane).
+// The Mission Control page: plain HTML and CSS, written to $TMPDIR/mission-control/index.html.
+// Two tabs, who (the agent and tool-call tree) and code (the file map), both drawn from
+// window.MAP in data.js (see writePage in register.tsx), which it re-reads every second.
+// Restyle it here; nothing else needs to change. The tab lives in the URL hash (#who, #code).
 // Keep this free of backticks and dollar-brace sequences: it is one template literal.
 export const TEMPLATE = `<!doctype html>
 <meta charset="utf-8">
-<title>Mission Control: code map</title>
+<title>Mission Control</title>
 <style>
   :root { --bg:#0d1015; --card:#151922; --card-live:#1b2130; --line:#2a3140; --text:#e8ebf2; --dim:#7d8698; --faint:#4b5263;
           --edge:#3a4252; --edge-hot:#6b7a96; --read:#5aa9ff; --edit:#ffa24c; --changed:#3ddc84; }
@@ -15,6 +15,14 @@ export const TEMPLATE = `<!doctype html>
   body { display: flex; flex-direction: column; background-image: radial-gradient(#1a1f28 1px, transparent 1px); background-size: 22px 22px; }
   header { display: flex; align-items: center; gap: 8px; padding: 18px 24px 0; flex: none; }
   h1 { margin: 0 12px 0 0; font-size: 20px; }
+  .tabs { display: flex; gap: 6px; margin-right: 12px; }
+  .tab { padding: 4px 14px; border: 1px solid var(--line); border-radius: 8px; background: #161b24; color: var(--dim); font: inherit; font-size: 13px; cursor: pointer; }
+  .tab.on { background: #26324a; color: var(--text); border-color: #3a4a6a; }
+  #who { flex: 1; min-height: 0; overflow: auto; padding: 18px 24px; font: 13.5px 'SF Mono', Menlo, monospace; line-height: 22px; }
+  .line { white-space: pre; }
+  .line .p { color: var(--faint); }
+  .line.running { color: #e8c547; } .line.failed { color: #ff6b6b; } .line.done.tool { color: var(--dim); } .line.done.main, .line.done.agent { color: var(--changed); font-weight: 600; }
+  .none { color: var(--dim); font: 14px -apple-system, sans-serif; }
   .pill { padding: 3px 11px; border: 1px solid var(--line); border-radius: 12px; background: #161b24; font-size: 12.5px; color: var(--dim); }
   .pill.on { color: var(--changed); }
   .now { display: flex; align-items: center; gap: 7px; margin-left: 8px; font-size: 13px; }
@@ -42,10 +50,12 @@ export const TEMPLATE = `<!doctype html>
   .chip { padding: 3px 11px; border: 1px solid var(--line); border-radius: 12px; background: #141820; font-size: 12px; color: var(--dim); }
 </style>
 <header id="head"></header>
+<div id="who" hidden></div>
 <div id="stage"><div id="graph"><svg id="edges"></svg><div class="cols" id="cols"></div></div></div>
 <footer id="foot"></footer>
 <script src="data.js"></script>
 <script>
+  function tab() { return location.hash === '#code' ? 'code' : 'who'; }
   var SVGNS = 'http://www.w3.org/2000/svg';
   function h(tag, cls, text) {
     var el = document.createElement(tag);
@@ -56,7 +66,16 @@ export const TEMPLATE = `<!doctype html>
   function render(M) {
     var head = document.getElementById('head'), cols = document.getElementById('cols'), foot = document.getElementById('foot');
     head.textContent = ''; cols.textContent = ''; foot.textContent = '';
-    head.appendChild(h('h1', '', 'Code map'));
+    head.appendChild(h('h1', '', 'Mission Control'));
+    var tabs = h('div', 'tabs');
+    [['who', 'Who (w)'], ['code', 'Code (c)']].forEach(function (t) {
+      var b = h('button', 'tab' + (tab() === t[0] ? ' on' : ''), t[1]);
+      b.onclick = function () { location.hash = t[0]; render(window.MAP); };
+      tabs.appendChild(b);
+    });
+    head.appendChild(tabs);
+    var S = M.who.summary;
+    head.appendChild(h('span', 'pill', S.agents + ' agents (' + S.running + ' running) \u00b7 ' + S.tools + ' tool calls' + (S.failed ? ' \u00b7 ' + S.failed + ' failed' : '')));
     head.appendChild(h('span', 'pill', M.files + ' files'));
     head.appendChild(h('span', 'pill' + (M.changed ? ' on' : ''), M.changed + ' changed'));
     if (M.now) {
@@ -64,6 +83,19 @@ export const TEMPLATE = `<!doctype html>
       now.style.color = M.nowState === 'read' ? 'var(--read)' : 'var(--edit)';
       now.insertBefore(h('i'), now.firstChild);
       head.appendChild(now);
+    }
+    var whoEl = document.getElementById('who'), stageEl = document.getElementById('stage');
+    whoEl.hidden = tab() !== 'who'; stageEl.hidden = tab() !== 'code'; foot.hidden = tab() !== 'code';
+    if (tab() === 'who') {
+      whoEl.textContent = '';
+      if (!M.who.lines.length) whoEl.appendChild(h('div', 'none', 'Nothing yet. Start a task and watch it fill in.'));
+      M.who.lines.forEach(function (l) {
+        var row = h('div', 'line ' + l.status + ' ' + l.kind);
+        row.appendChild(h('span', 'p', l.prefix));
+        row.appendChild(document.createTextNode(l.text));
+        whoEl.appendChild(row);
+      });
+      return;
     }
     if (!M.files) {
       document.getElementById('graph').style.display = 'none';
@@ -139,8 +171,14 @@ export const TEMPLATE = `<!doctype html>
 
   var last = JSON.stringify(window.MAP);
   render(window.MAP);
-  if (location.search.indexOf('live') >= 0) {
-    window.addEventListener('resize', function () { render(window.MAP); });
+  window.addEventListener('resize', function () { render(window.MAP); });
+  window.addEventListener('hashchange', function () { render(window.MAP); });
+  window.addEventListener('keydown', function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'w') { location.hash = 'who'; render(window.MAP); }
+    if (e.key === 'c') { location.hash = 'code'; render(window.MAP); }
+  });
+  {
     setInterval(function () {
       var s = document.createElement('script');
       s.src = 'data.js?t=' + Date.now();

@@ -4,15 +4,16 @@ Zhitong's Claude Code mods. Forked from [hamzafer/claude-code-mods](https://gith
 
 ## mission
 
-`/mission` opens a pane with a live map of the main agent, its subagents and every tool call, plus a code map of the files they touch.
+`/mission` opens a live web page with two tabs, **Who** (the main agent, its subagents and every tool call) and **Code** (a map of the files Claude reads and edits, the imports between them, and one line on why each changed). The page refreshes itself every second. There is no side pane.
+
+It opens in a cmux browser split when run inside cmux, otherwise in your default browser.
 
 Changes from upstream `mission-control`:
 
-- The code map is an HTML page (`hooks/template.ts`) fed by a small `data.js`, not a hand-built SVG. Text wraps by itself, so nothing is cut with `…`, and restyling the map means editing plain HTML/CSS.
-- The per-file "why" is only asked from the model (haiku) while the code map is on screen, then once per change.
-- A redraw is skipped when the data has not changed.
-- `/mission:browser` opens the code map in a live-refreshing browser tab (cmux split when available, default browser otherwise).
-
+- The terminal pane is gone: `/mission` opens the web page. No Chrome screenshot is needed any more.
+- The page (`hooks/template.ts`) is plain HTML and CSS fed by a small `data.js`, not a hand-built SVG. Text wraps by itself, so nothing is cut with `…`, and restyling means editing HTML/CSS.
+- The per-file "why" is asked from the model (haiku) only once `/mission` has opened the page, then once per change.
+- Nothing is written until `/mission` runs, and `/mission off` stops it. Writes are skipped when the data has not changed.
 ### Install
 
 ```sh
@@ -24,21 +25,20 @@ Restart Claude Code (or run `/reload-plugins`), then:
 
 | Command | What it does |
 | --- | --- |
-| `/mission` | Open the live map. In the pane: `w` who, `c` code, `q` close. |
-| `/mission code` | Open straight on the code map. |
-| `/mission:browser` | Open the code map in a browser tab that refreshes every second. |
+| `/mission` | Open the page on the Who tab and keep it updated. |
+| `/mission code` | Open the page on the Code tab. |
+| `/mission off` | Stop updating the page. |
 
-The terminal picture is a headless Google Chrome screenshot of that page (`/Applications/Google Chrome.app`) and only redraws while the Code view is open.
+In the page: `w` Who, `c` Code. The tab is kept in the URL hash (`#who`, `#code`).
 
-### How the code map works
+### How it works
 
 | File | Role |
 | --- | --- |
+| `hooks/register.tsx` | Tracks agents, tool calls and files. After `/mission`, writes `index.html` once and `data.js` on every change to `$TMPDIR/mission-control/`, and opens the page. |
 | `hooks/map.ts` | `mapData()` turns the touched files into plain data: cards by import depth, edges, counts. |
-| `hooks/template.ts` | The page: HTML, CSS and a little JS that lays out the cards and draws the arrows. Restyle it here. |
-| `hooks/register.tsx` | Writes `index.html` and `data.js` to `$TMPDIR/mission-control/`, and has headless Chrome screenshot the page for the terminal pane. |
-
-The page is opened with `?live` in the browser to re-read `data.js` every second, and without it for the one-off screenshot. The mod only writes while the Code view is open.
+| `hooks/tree.ts` | The Who tree lines. |
+| `hooks/template.ts` | The page: tabs, the tree, the card layout and the arrows. Restyle it here. |
 
 ### Develop
 

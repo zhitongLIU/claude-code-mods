@@ -5,11 +5,10 @@ import { label, lines, summary } from '../hooks/tree'
 import { cap } from '../hooks/register'
 
 let mockClock: any
-const PANE = { component: 'Pane', requestId: 'mission', props: { title: 'Mission Control', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 30 } } }
 const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 120 } }
 
 // Stands for the engine beneath the mod.
-function engine(on: any, opts: { noChrome?: boolean } = {}) {
+function engine(on: any, opts: { cmux?: boolean } = {}) {
   const runs: string[][] = []
   const models: number[] = []
   const writes: Record<string, string> = {}
@@ -23,14 +22,11 @@ function engine(on: any, opts: { noChrome?: boolean } = {}) {
   on('tool.call', () => ({ result: {}, text: 'ok' }))
   on('fs.read', (_$: any, e: any) => ({ value: e.path.endsWith('login.tsx') ? "import { start } from '../auth/session'\n" : '' }))
   on('fs.write', (_$: any, e: any) => ((writes[e.path] = e.text), { value: undefined }))
-  on('fs.exists', () => ({ value: !opts.noChrome }))
-  on('env.get', () => ({ value: '/tmp/' }))
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CMUX_WORKSPACE_ID' ? (opts.cmux ? 'ws' : undefined) : '/tmp/' }))
   on('process.run', (_$: any, e: any) => (runs.push(e.argv), { value: { exitCode: 0, stdout: '', stderr: '' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.panes', () => ({ value: [{ id: 'mission', title: 'Mission Control', isShown: true, isFocused: true, isPlaced: true }] }))
   on('model.complete', () => (models.push(1), { value: { isAnswered: true, text: '["tokens now expire after an hour"]', usage: { input_tokens: 1, output_tokens: 1 } } }))
   on('ui.render', ($: any, e: any) => $.ui.resolve(e).Text({ children: 'band below' }))
-  return { runs, writes, clock, models }
+  return { runs, writes, clock, models, opts }
 }
 
 describe('mission-control', () => {
@@ -48,7 +44,7 @@ describe('mission-control', () => {
   })
 
 
-  test('review fixes: the cap keeps main, a turn ending closes stuck calls, no Chrome says so', async ($, on) => {
+  test('review fixes: the cap keeps main and the agents', async ($, on) => {
     const many = [
       { id: 'main', parent: null, kind: 'main' as const, label: 'main', family: 'main', status: 'running' as const, start: 0 },
       { id: 'ag', parent: 'main', kind: 'agent' as const, label: 'a', family: 'agent', status: 'running' as const, start: 0 },
@@ -61,28 +57,17 @@ describe('mission-control', () => {
     expect(kept.at(-1)?.id).toBe('t399') // the newest calls stay
     const crowd = Array.from({ length: 310 }, (_, i) => ({ id: `a${i}`, parent: 'main', kind: 'agent' as const, label: 'a', family: 'agent', status: 'done' as const, start: i }))
     expect(cap([...crowd, ...many.slice(2)]).filter(n => n.kind === 'tool')).toHaveLength(0) // no room left: no tool calls
-
-    const { runs } = engine(on, { noChrome: true }) // no Chrome on this machine
-    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/repo' } as any)
-    await $.turn.start({ text: 'go', turnId: 't1' } as any)
-    await $.command.run({ command: 'mission', args: 'code' } as any)
-    const pane = await $.ui.mount({ plugin: 'mission', surface: 'terminal', ...PANE } as any)
-    await $.tool.call({ tool: 'Read', file_path: '/repo/src/a.ts' } as any)
-    await mockClock.advance(1600)
-    expect(await pane.find({ type: 'Text', text: /needs Google Chrome/ })).toBeDefined()
-    expect(runs.some(a => a[0] === 'sh')).toBe(false)
-    await pane.unmount()
   })
 
   test('a background agent still running keeps its open calls when main ends', async ($, on) => {
-    engine(on)
+    const { writes, clock } = engine(on)
     await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/repo' } as any)
     await $.turn.start({ text: 'go', turnId: 't1' } as any)
     await $.agent.spawn({ prompt: 'p', description: 'long runner' } as any) // agent ag1, background
     await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1 } as any) // main ends, ag1 runs on
-    const pane = await $.ui.mount({ plugin: 'mission', surface: 'terminal', ...PANE } as any)
-    expect(await pane.find({ type: 'Text', text: /1 agents \(1 running\)/ })).toBeDefined() // still running
-    await pane.unmount()
+    await $.command.run({ command: 'mission', args: '' } as any)
+    await clock.advance(1600)
+    expect(writes['/tmp/mission-control/data.js']).toContain('"agents":1,"running":1') // still running
   })
 
   test('labels tool calls by family', () => {
@@ -147,56 +132,52 @@ describe('mission-control', () => {
     expect(models).toHaveLength(1) // already explained: not asked twice
   })
 
-  test('a turn fills the tree, the band sums it up, and /mission code draws the map', async ($, on) => {
-    const { runs, writes, clock } = engine(on)
+  test('a turn fills the tree and the band; /mission opens the page and keeps its data fresh', async ($, on) => {
+    const { runs, writes, clock, opts } = engine(on, { cmux: true })
     await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/repo' } as any)
     await $.turn.start({ text: 'fix the login bug', turnId: 't1' } as any)
     await $.agent.spawn({ prompt: 'check it', description: 'test login flow' } as any)
     await $.tool.call({ tool: 'Read', file_path: '/repo/src/pages/login.tsx' } as any)
     await $.tool.call({ tool: 'Edit', file_path: '/repo/src/auth/session.ts', old_string: 'a', new_string: 'b' } as any)
+    await clock.advance(1600)
+    expect(writes['/tmp/mission-control/data.js']).toBeUndefined() // /mission has not opened the page: nothing is written
 
     const band = await $.ui.mount({ plugin: 'mission', surface: 'terminal', ...BAND } as any)
     expect(await band.find({ type: 'Text', text: /1\/1 agents · 2 tools · 1 files changed/ })).toBeDefined()
     expect(await band.find({ type: 'Text', text: /band below/ })).toBeDefined()
     await band.unmount()
 
-    const r = await $.command.run({ command: 'mission', args: '' } as any)
+    const r = await $.command.run({ command: 'mission', args: 'code' } as any)
     expect(r.text).toMatch(/1 agents · 2 tool calls · 2 files/)
-    const pane = await $.ui.mount({ plugin: 'mission', surface: 'terminal', ...PANE } as any)
-    expect(await pane.find({ type: 'Text', text: /◆ main · fix the login bug/ })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: /● test login flow/ })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: /✎ edit: auth\/session\.ts/ })).toBeDefined()
+    expect(runs.some(a => a[0] === 'cmux' && a.includes('open-split') && a.some(x => x.endsWith('/mission-control/index.html#code')))).toBe(true)
+    expect(writes['/tmp/mission-control/index.html']).toContain('Mission Control')
+    const first = JSON.parse((writes['/tmp/mission-control/data.js'] ?? '').replace(/^window\.MAP = /, '').replace(/;$/, ''))
+    expect(first.who.lines.map((l: any) => l.text)).toEqual(expect.arrayContaining([expect.stringMatching(/◆ main · fix the login bug/), expect.stringMatching(/● test login flow/), expect.stringMatching(/✎ edit: auth\/session\.ts/)]))
 
     // 2. Images are not code: a screenshot read now stays off the map.
     await $.tool.call({ tool: 'Read', file_path: '/repo/shots/v2.png' } as any)
     // 5. Claude Code's own bookkeeping is not a tool call in the tree.
     await $.tool.call({ tool: 'SubagentHandback', summary: 'done' } as any)
-    expect(await pane.find({ type: 'Text', text: /SubagentHandback/ })).toBeUndefined()
-
     await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1 } as any)
-    await pane.press({ key: 'code' })
-    await clock.advance(1600) // the map draws a moment after a change
-    const map = writes['/tmp/mission-control/data.js'] ?? ''
-    expect(map).toContain('login.tsx')
-    expect(map).toContain('session.ts')
-    expect(map).not.toContain('v2.png')
-    expect(map).toContain('"from":"/repo/src/pages/login\\u002etsx"'.replace('\\u002e', '.')) // the import edge login → session
-    expect(runs.some(a => a[0] === 'sh' && a.includes('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'))).toBe(true)
-    expect(await pane.find({ type: 'Image' })).toBeDefined()
-    await clock.advance(1600) // the "why" lines redraw the map
-    const drawn = writes['/tmp/mission-control/data.js'] ?? ''
-    expect(drawn).toContain('tokens now expire') // the why, wrapped, never cut
-    expect(drawn).toContain('after an hour')
-    await pane.unmount()
-    // 3. In a tall enough pane the picture's size follows the width alone: two heights, one size.
-    const rowsAt = async (bodyRows: number) => {
-      const tall = await $.ui.mount({ plugin: 'mission', surface: 'terminal', ...PANE, props: { ...PANE.props, scroll: { offset: 0, bodyRows } } } as any)
-      const img: any = await tall.find({ type: 'Image' })
-      await tall.unmount()
-      return img?.props?.rows ?? img?.rows
-    }
-    expect(await rowsAt(50)).toBe(30)
-    expect(await rowsAt(60)).toBe(30)
+    await clock.advance(1600) // the data follows the work without anyone asking
+    const data = writes['/tmp/mission-control/data.js'] ?? ''
+    expect(data).toContain('login.tsx')
+    expect(data).toContain('session.ts')
+    expect(data).not.toContain('"id":"/repo/shots/v2.png"') // an image is not on the code map
+    expect(data).not.toContain('SubagentHandback')
+    expect(data).toContain('"from":"/repo/src/pages/login.tsx"') // the import edge login → session
+    expect(data).toContain('tokens now expire after an hour') // the why, never cut
+
+    // Outside cmux the default browser opens it; /mission off stops the writing.
+    opts.cmux = false
+    runs.length = 0
+    await $.command.run({ command: 'mission', args: '' } as any)
+    expect(runs.some(a => a[0] === 'open' && String(a[1]).endsWith('/index.html#who'))).toBe(true)
+    await $.command.run({ command: 'mission', args: 'off' } as any)
+    const before = writes['/tmp/mission-control/data.js']
+    await $.tool.call({ tool: 'Read', file_path: '/repo/src/zzz.ts' } as any)
+    await clock.advance(1600)
+    expect(writes['/tmp/mission-control/data.js']).toBe(before)
     expect(summary([]).tools).toBe(0)
   })
 })
