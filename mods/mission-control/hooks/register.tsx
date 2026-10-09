@@ -28,9 +28,8 @@ const sid = atom({ plugin: 'mission', key: 'sid' } as const, '') // this session
 
 // The web page's bookkeeping; a reload starts it over. `on` once /mission has opened the page.
 const page = { on: false, pending: false, dirty: false, last: '', written: false }
-// path → the edits of the turn that last changed it, kept until someone looks at the code map
-// and the one-line "why" is asked for (lazily: no model call while nobody watches).
-const pending = new Map<string, { turn: number; edits: string[] }>()
+// The edits awaiting their one-line "why" live on the files atom (MapFile.edits), so a reload keeps
+// them; the "why" is asked for lazily: no model call while nobody watches.
 const asking = new Set<string>() // paths a model call is already explaining
 
 // Under the cap, the oldest tool calls go first; main and the agents always stay.
@@ -116,10 +115,7 @@ export const register: Register = on => {
     }
     if (path && !failed && (e.tool === 'Edit' || e.tool === 'Write')) {
       const what = e.tool === 'Edit' ? `- ${String(args.old_string ?? '').slice(0, 300)}\n+ ${String(args.new_string ?? '').slice(0, 300)}` : `wrote ${String(args.content ?? '').slice(0, 400)}`
-      const t = await read($, turn)
-      const old = pending.get(path)
-      pending.set(path, { turn: t, edits: old?.turn === t ? [...old.edits, what] : [what] })
-      await touch($, path, e.tool === 'Edit' ? 'edit' : 'write', true)
+      await touch($, path, e.tool === 'Edit' ? 'edit' : 'write', true, what)
     }
     return r
   })
@@ -180,14 +176,15 @@ export const register: Register = on => {
 }
 
 // Notes a file Claude touched, with what it links to (imports and mentioned names, per language).
-async function touch($: EngineInterface, path: string, act: MapFile['act'], isChange: boolean) {
+async function touch($: EngineInterface, path: string, act: MapFile['act'], isChange: boolean, what?: string) {
   if (!CODE_FILE.test(path)) return // an image, a PDF, a lockfile: not code to map
   const t = await read($, turn)
   const text = await $.fs.read(path).catch(() => '')
   const links = typeof text === 'string' ? linksOf(path, text.slice(0, 200_000)) : { imports: [], names: [] } // imports sit near the top
   await update($, files, list => {
     const old = list.find(f => f.path === path)
-    const next: MapFile = { path, act, at: Date.now(), changedTurn: isChange ? t : (old?.changedTurn ?? 0), imports: links.imports.length ? links.imports : (old?.imports ?? []), names: links.names.length ? links.names : (old?.names ?? []), why: isChange ? undefined : old?.why }
+    const edits = isChange && what ? (old?.editsTurn === t ? [...(old.edits ?? []), what] : [what]) : old?.edits
+    const next: MapFile = { path, act, at: Date.now(), changedTurn: isChange ? t : (old?.changedTurn ?? 0), imports: links.imports.length ? links.imports : (old?.imports ?? []), names: links.names.length ? links.names : (old?.names ?? []), why: isChange ? undefined : old?.why, edits, editsTurn: isChange && what ? t : old?.editsTurn }
     return [...list.filter(f => f.path !== path), next].sort((a, b) => b.at - a.at).slice(0, MAX_FILES)
   })
   await publish($)
@@ -196,7 +193,7 @@ async function touch($: EngineInterface, path: string, act: MapFile['act'], isCh
 
 // One plain line per changed file that has none yet, from what changed in its last turn.
 async function explainPending($: EngineInterface) {
-  const todo = [...pending].filter(([path]) => !asking.has(path))
+  const todo = (await read($, files)).filter(f => f.edits?.length && !asking.has(f.path)).map(f => [f.path, { turn: f.editsTurn ?? 0, edits: f.edits ?? [] }] as const)
   if (todo.length === 0) return
   const paths = todo.map(([path]) => path)
   for (const path of paths) asking.add(path)
@@ -220,8 +217,8 @@ async function explainPending($: EngineInterface) {
     // By position, so nothing has to match a path the model may have rewritten.
     const byPath = new Map(todo.map(([p, { turn: t }], i) => [p, { turn: t, why: typeof whys[i] === 'string' ? (whys[i] as string).replace(/\s*—\s*/g, ', ').slice(0, 80) : undefined }]))
     // A file edited again since was queued anew under a later turn: this answer must not label it.
-    await update($, files, list => list.map(f => (byPath.get(f.path)?.why && f.changedTurn === byPath.get(f.path)?.turn ? { ...f, why: byPath.get(f.path)?.why } : f)))
-    for (const [path, { turn: t }] of todo) if (pending.get(path)?.turn === t && byPath.get(path)?.why) pending.delete(path)
+    // The edits are dropped with it, unless the file changed again since: then they stay queued for that later turn.
+    await update($, files, list => list.map(f => (byPath.get(f.path)?.why && f.editsTurn === byPath.get(f.path)?.turn ? { ...f, why: byPath.get(f.path)?.why, edits: undefined } : f)))
     await publish($)
   } finally {
     for (const path of paths) asking.delete(path)

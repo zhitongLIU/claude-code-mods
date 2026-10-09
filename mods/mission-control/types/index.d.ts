@@ -19,6 +19,8 @@ export type MapFile = {
   imports: string[] // resolved import targets, extension stripped
   names?: string[] // class and module names the file mentions, for languages that link by name
   why?: string
+  edits?: string[] // what its last turn changed, kept until the one-line why is asked for
+  editsTurn?: number // the turn those edits belong to
 }
 
 declare module 'claude-code' {
