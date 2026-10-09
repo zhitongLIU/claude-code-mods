@@ -7,7 +7,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { MapFile, MissionNode } from '../types'
-import { importsOf, svg } from './map'
+import { importsOf, mapData } from './map'
+import { TEMPLATE } from './template'
 import { label, lines, summary } from './tree'
 
 const PANE = 'mission'
@@ -29,7 +30,7 @@ const turn = atom({ plugin: 'mission', key: 'turn' } as const, 0)
 const now = atom({ plugin: 'mission', key: 'now' } as const, 0)
 
 // Drawing bookkeeping; a reload starts it over.
-const draw = { size: { columns: 100, rows: 30 }, pending: false, dirty: false, n: 0, error: '' }
+const draw = { size: { columns: 100, rows: 30 }, pending: false, dirty: false, n: 0, error: '', last: '' }
 // path → the edits of the turn that last changed it, kept until someone looks at the code map
 // and the one-line "why" is asked for (lazily: no model call while nobody watches).
 const pending = new Map<string, { turn: number; edits: string[] }>()
@@ -305,7 +306,7 @@ async function renderSoon($: EngineInterface) {
   if (!(await isWatching($))) return
   draw.pending = true
   draw.dirty = false
-  $.clock.after(700, () => {
+  $.clock.after(1500, () => {
     void renderMap($)
       .catch(() => {})
       .finally(() => {
@@ -327,15 +328,23 @@ async function renderMap($: EngineInterface) {
   const n = ++draw.n
   const width = Math.round(draw.size.columns * 9)
   const height = Math.round(draw.size.rows * 19)
-  const svgPath = `${dir}/map.svg`
+  const html = `${dir}/index.html`
   const png = `${dir}/map-${n % 2}.png` // two files in turn, so the shown one is never half written
-  await $.fs.write(svgPath, svg(await read($, files), { width, height, at: Date.now(), turn: await read($, turn) }))
+  // The data alone changes between draws; the page is the same file, written so an update reaches it.
+  const data = JSON.stringify(mapData(await read($, files), { at: Date.now(), turn: await read($, turn) })).replace(/</g, '\\u003c')
+  const key = `${width}x${height} ${data}`
+  if (key === draw.last && (await read($, frame))) return // nothing changed since the last picture
+  await $.fs.write(html, TEMPLATE)
+  await $.fs.write(`${dir}/data.js`, `window.MAP = ${data};`)
   // Headless Chrome writes the screenshot but does not always exit: wait for the file,
   // then close that Chrome (its own throwaway profile, never the person's browser).
   const script =
     'mkdir -p "$(dirname "$2")"; rm -f "$2"; "$1" --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=2 --no-first-run --no-default-browser-check ' +
-    '--user-data-dir="$3" --window-size="$4" --screenshot="$2" "$5" >/dev/null 2>&1 & pid=$!; ' +
+    '--user-data-dir="$3" --window-size="$4" --virtual-time-budget=500 --screenshot="$2" "$5" >/dev/null 2>&1 & pid=$!; ' +
     'i=0; while [ ! -s "$2" ] && [ $i -lt 150 ]; do sleep 0.1; i=$((i+1)); done; sleep 0.2; pkill -P $pid 2>/dev/null; kill $pid 2>/dev/null; [ -s "$2" ]'
-  const r = await $.process.run(['sh', '-c', script, 'mission-control', CHROME, png, `${dir}/chrome`, `${width},${height}`, `file://${encodeURI(svgPath)}`], { timeoutMs: 20_000 })
-  if (r.exitCode === 0) await update($, frame, () => ({ file: png, n }))
+  const r = await $.process.run(['sh', '-c', script, 'mission-control', CHROME, png, `${dir}/chrome`, `${width},${height}`, `file://${encodeURI(html)}`], { timeoutMs: 20_000 })
+  if (r.exitCode === 0) {
+    draw.last = key
+    await update($, frame, () => ({ file: png, n }))
+  }
 }

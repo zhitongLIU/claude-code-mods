@@ -1,4 +1,4 @@
-// The "code" view: files Claude touched, the imports between them, drawn as an SVG.
+// The "code" view: files Claude touched, the imports between them, handed to the HTML page as data.
 import type { MapFile } from '../types'
 
 const stripExt = (p: string) => p.replace(/\.(tsx?|jsx?|mjs|cjs|py|go|rs|rb|vue|svelte)$/, '').replace(/\/index$/, '')
@@ -62,41 +62,30 @@ export function layout(files: MapFile[], es: Edge[]) {
   return columns.filter(Boolean)
 }
 
-// Every line of `text`, broken at words about `per` characters wide. Nothing is cut.
-export function wrapAll(text: string, per: number): string[] {
-  const lines: string[] = []
-  let rest = text.trim()
-  while (rest.length > per) {
-    const cut = rest.lastIndexOf(' ', per)
-    const at = cut > per * 0.5 ? cut : per
-    lines.push(rest.slice(0, at))
-    rest = rest.slice(at).trim()
-  }
-  if (rest) lines.push(rest)
-  return lines
+export type Look = { at: number; turn: number }
+
+export type MapCard = {
+  id: string
+  title: string
+  sub: string
+  why?: string
+  state: 'read' | 'edit' | 'changed' | null // what the card glows for: being read, being edited, changed this turn
+  live: boolean // touched in the last few seconds
 }
 
-// Escapes markup, and drops control characters, one of which turns the picture into an XML error.
-const esc = (s: string) =>
-  s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-
-export type Look = { width: number; height: number; at: number; turn: number }
-
-// The whole picture: boxes per file, arrows per import, a glow on what is being touched now.
-const SANS = `-apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif`
-const MONO = `'SF Mono', Menlo, monospace`
-const C = {
-  bg: '#0d1015', grid: '#1a1f28', card: '#151922', cardLive: '#1b2130', line: '#2a3140', text: '#e8ebf2',
-  dim: '#7d8698', faint: '#4b5263', edge: '#3a4252', edgeHot: '#6b7a96',
-  read: '#5aa9ff', edit: '#ffa24c', changed: '#3ddc84',
+export type MapData = {
+  files: number
+  changed: number
+  now: string // "reading login.tsx", or ''
+  nowState: 'read' | 'edit' | null
+  columns: MapCard[][] // by import depth
+  edges: { from: string; to: string; hot: boolean }[]
+  extra: string[] // files only read and linked to nothing
 }
 
-type Card = { f: MapFile; x: number; y: number; w: number; h: number; title: string; sub: string; why: string[] }
-
-// The whole picture: the files that changed or link to others as cards with arrows, the
-// rest as small chips; a glow on what is being touched right now.
-export function svg(files: MapFile[], look: Look): string {
-  const { width: W, height: H, at, turn } = look
+// Everything the page draws, as plain data: the template lays it out and draws the arrows.
+export function mapData(files: MapFile[], look: Look): MapData {
+  const { at, turn } = look
   const isChanged = (f: MapFile) => f.changedTurn === turn && turn > 0
   const isLive = (f: MapFile) => at - f.at < 5000
   const es = edges(files)
@@ -104,143 +93,26 @@ export function svg(files: MapFile[], look: Look): string {
   const main = files.filter(f => linked.has(f.path) || isChanged(f) || isLive(f) || f.act !== 'read')
   const extra = files.filter(f => !main.includes(f))
   const mainEs = es.filter(e => main.some(f => f.path === e.from) && main.some(f => f.path === e.to))
-
+  const byPath = new Map(main.map(f => [f.path, f]))
   const title = (f: MapFile) => titleOf(f.path, files.map(x => x.path))
+  const readLike = (f: MapFile) => f.act === 'read' || f.act === 'search'
 
-  // Cards sized to their text, laid out in import-depth columns, centered as a whole.
-  const cols = layout(main, mainEs)
-  const colOf = new Map(cols.flatMap((col, ci) => col.map(p => [p, ci] as const)))
-  const gapX = 64
-  const gapY = 18
-  const cards = new Map<string, Card>()
-  const colW: number[] = []
-  const colH: number[] = []
-  cols.forEach((col, ci) => {
-    let w = 170
-    for (const p of col) {
-      const f = main.find(m => m.path === p) as MapFile
-      w = Math.max(w, Math.min(360, title(f).length * 8.6 + 64))
-    }
-    colW[ci] = w
-    let y = 0
-    for (const p of col) {
-      const f = main.find(m => m.path === p) as MapFile
-      const why = f.why ? wrapAll(f.why, Math.floor((w - 32) / 7.1)) : []
-      const h = 52 + (why.length ? 20 + 17 * (why.length - 1) : 0)
-      cards.set(p, { f, x: 0, y, w, h, title: title(f), sub: folder(f.path, 2), why })
-      y += h + gapY
-    }
-    colH[ci] = y - gapY
-  })
-  const top = 76
-  const bottom = extra.length ? 64 : 24
-  const totalW = colW.reduce((a, b) => a + b, 0) + gapX * Math.max(0, cols.length - 1)
-  // Laid out at 1x, then the whole graph scales as one group, text and all: up to 1.5x to
-  // fill a roomy pane, down to fit a small one.
-  const maxH = Math.max(1, ...colH)
-  const scale = Math.min(1.5, (W - 48) / Math.max(1, totalW), (H - top - bottom - 40) / maxH)
-  let x0 = 0
-  cols.forEach((col, ci) => {
-    const y0 = (maxH - (colH[ci] ?? 0)) / 2
-    for (const p of col) {
-      const c = cards.get(p) as Card
-      c.x = x0
-      c.y = y0 + c.y
-    }
-    x0 += (colW[ci] ?? 0) + gapX
-  })
-  const tx = (W - totalW * scale) / 2
-  const ty = top + (H - top - bottom - maxH * scale) / 2
-
-  const live = files.filter(isLive).sort((a, b) => b.at - a.at)[0]
-  const changed = files.filter(isChanged).length
-  const o: string[] = []
-  o.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`)
-  o.push(`<defs>
-<pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="${C.grid}"/></pattern>
-<marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,1L9,5L0,9z" fill="${C.edgeHot}"/></marker>
-<filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="9"/></filter>
-<filter id="shadow" x="-20%" y="-20%" width="140%" height="160%"><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.45"/></filter>
-</defs>`)
-  o.push(`<rect width="${W}" height="${H}" fill="${C.bg}"/><rect width="${W}" height="${H}" fill="url(#dots)"/>`)
-
-  // Header: title, counts as pills, and what is happening right now.
-  o.push(`<text x="24" y="40" font-family="${SANS}" font-size="20" font-weight="700" fill="${C.text}">Code map</text>`)
-  let px = 132
-  for (const [label, color] of [[`${files.length} files`, C.dim], [`${changed} changed`, changed ? C.changed : C.dim]] as const) {
-    const w = label.length * 7.4 + 22
-    o.push(`<rect x="${px}" y="23" width="${w}" height="24" rx="12" fill="#161b24" stroke="${C.line}"/><text x="${px + w / 2}" y="39.5" text-anchor="middle" font-family="${SANS}" font-size="12.5" fill="${color}">${label}</text>`)
-    px += w + 8
+  const card = (p: string): MapCard => {
+    const f = byPath.get(p) as MapFile
+    const live = isLive(f)
+    const state = live ? (readLike(f) ? 'read' : 'edit') : isChanged(f) ? 'changed' : null
+    return { id: p, title: title(f), sub: folder(p, 2), why: f.why, state, live }
   }
-  if (live) {
-    const verb = live.act === 'read' ? 'reading' : live.act === 'search' ? 'searching' : 'editing'
-    const color = live.act === 'read' || live.act === 'search' ? C.read : C.edit
-    o.push(`<circle cx="${px + 10}" cy="35" r="4.5" fill="${color}"/><text x="${px + 21}" y="39.5" font-family="${SANS}" font-size="13" fill="${color}">${verb} ${esc(title(live))}</text>`)
+  const newest = files.filter(isLive).sort((a, b) => b.at - a.at)[0]
+  return {
+    files: files.length,
+    changed: files.filter(isChanged).length,
+    now: newest ? `${newest.act === 'read' ? 'reading' : newest.act === 'search' ? 'searching' : 'editing'} ${title(newest)}` : '',
+    nowState: newest ? (readLike(newest) ? 'read' : 'edit') : null,
+    columns: layout(main, mainEs).map(col => col.map(card)),
+    edges: mainEs.map(e => ({ ...e, hot: [e.from, e.to].some(p => isChanged(byPath.get(p) as MapFile) || isLive(byPath.get(p) as MapFile)) })),
+    extra: extra.map(title),
   }
-
-  if (files.length === 0) {
-    o.push(`<text x="${W / 2}" y="${H / 2}" text-anchor="middle" font-family="${SANS}" font-size="16" fill="${C.dim}">Files Claude reads or edits show up here</text>`)
-  }
-
-  // Arrows first, so cards sit on top of them; all of it in the scaled group.
-  o.push(`<g transform="translate(${tx.toFixed(1)},${ty.toFixed(1)}) scale(${scale.toFixed(3)})">`)
-  for (const e of mainEs) {
-    const a = cards.get(e.from)
-    const b = cards.get(e.to)
-    if (!a || !b) continue
-    const hot = isChanged(a.f) || isChanged(b.f) || isLive(a.f) || isLive(b.f)
-    const x1 = a.x + a.w
-    const y1 = a.y + Math.min(a.h / 2, 26)
-    const x2 = b.x - 4
-    const y2 = b.y + Math.min(b.h / 2, 26)
-    const from = colOf.get(e.from) ?? 0
-    const to = colOf.get(e.to) ?? 0
-    let d: string
-    if (to - from > 1) {
-      // Skips a column: arc over the cards between, so the arrow is never hidden behind one.
-      const between = [...cards.values()].filter(c => (colOf.get(c.f.path) ?? 0) > from && (colOf.get(c.f.path) ?? 0) < to)
-      const peak = Math.min(a.y, b.y, ...between.map(c => c.y)) - 34
-      const ax = a.x + a.w * 0.7
-      const bx = b.x + b.w * 0.3
-      d = `M${ax},${a.y} C${ax},${peak} ${bx},${peak} ${bx},${b.y - 4}`
-    } else if (x2 > x1 + 8) {
-      d = `M${x1},${y1} C${x1 + (x2 - x1) / 2},${y1} ${x1 + (x2 - x1) / 2},${y2} ${x2},${y2}`
-    } else {
-      d = `M${a.x + a.w / 2},${a.y + a.h} C${a.x + a.w / 2},${a.y + a.h + 30} ${b.x + b.w / 2},${b.y - 30} ${b.x + b.w / 2},${b.y - 4}`
-    }
-    o.push(`<path d="${d}" fill="none" stroke="${hot ? C.edgeHot : C.edge}" stroke-width="${hot ? 2 : 1.5}" marker-end="url(#a)"/>`)
-  }
-
-  for (const c of cards.values()) {
-    const { f } = c
-    const liveNow = isLive(f)
-    const accent = liveNow ? (f.act === 'read' || f.act === 'search' ? C.read : C.edit) : isChanged(f) ? C.changed : null
-    if (liveNow && accent) o.push(`<rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" rx="12" fill="${accent}" opacity="0.35" filter="url(#glow)"/>`)
-    o.push(`<g filter="url(#shadow)"><rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" rx="12" fill="${liveNow ? C.cardLive : C.card}" stroke="${liveNow && accent ? accent : C.line}" stroke-width="${liveNow ? 1.5 : 1}"/></g>`)
-    if (accent) o.push(`<rect x="${c.x}" y="${c.y + 10}" width="3.5" height="${c.h - 20}" rx="1.75" fill="${accent}"/>`)
-    o.push(`<text x="${c.x + 18}" y="${c.y + 24}" font-family="${SANS}" font-size="14.5" font-weight="650" fill="${C.text}">${esc(c.title)}</text>`)
-    o.push(`<text x="${c.x + 18}" y="${c.y + 41}" font-family="${MONO}" font-size="11" fill="${C.faint}">${esc(c.sub)}</text>`)
-    const badge = liveNow ? (f.act === 'read' ? '●' : f.act === 'search' ? '●' : '✎') : isChanged(f) ? '✓' : ''
-    if (badge && accent) o.push(`<text x="${c.x + c.w - 14}" y="${c.y + 24}" text-anchor="end" font-family="${SANS}" font-size="13" fill="${accent}">${badge}</text>`)
-    c.why.forEach((line, i) => o.push(`<text x="${c.x + 18}" y="${c.y + 63 + 17 * i}" font-family="${SANS}" font-size="12.5" fill="#aeb6c6">${esc(line)}</text>`))
-  }
-
-  o.push('</g>')
-
-  // Files only read and linked to nothing: small chips along the bottom.
-  if (extra.length) {
-    o.push(`<text x="24" y="${H - 36}" font-family="${SANS}" font-size="11.5" fill="${C.faint}">ALSO READ</text>`)
-    let cx = 100
-    for (const f of extra) {
-      const label = title(f)
-      const w = label.length * 7 + 22
-      if (cx + w > W - 24) break
-      o.push(`<rect x="${cx}" y="${H - 52}" width="${w}" height="24" rx="12" fill="#141820" stroke="${C.line}"/><text x="${cx + w / 2}" y="${H - 35.5}" text-anchor="middle" font-family="${SANS}" font-size="12" fill="${C.dim}">${esc(label)}</text>`)
-      cx += w + 8
-    }
-  }
-  o.push('</svg>')
-  return o.join('\n')
 }
 
 // A file's name, or with several of that name the nearest folder that tells them apart:

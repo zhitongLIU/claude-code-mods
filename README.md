@@ -8,7 +8,9 @@ Zhitong's Claude Code mods. Forked from [hamzafer/claude-code-mods](https://gith
 
 Changes from upstream `mission-control`:
 
-- Code map cards wrap the full "why" text instead of cutting it with `…`.
+- The code map is an HTML page (`hooks/template.ts`) fed by a small `data.js`, not a hand-built SVG. Text wraps by itself, so nothing is cut with `…`, and restyling the map means editing plain HTML/CSS.
+- The per-file "why" is only asked from the model (haiku) while the code map is on screen, then once per change.
+- A redraw is skipped when the data has not changed.
 - `/mission:browser` opens the code map in a live-refreshing browser tab (cmux split when available, default browser otherwise).
 
 ### Install
@@ -26,7 +28,7 @@ Restart Claude Code, then:
 | `/mission code` | Open straight on the code map. |
 | `/mission:browser` | Open the code map in a browser tab that refreshes every second. |
 
-The code map is drawn with Google Chrome (`/Applications/Google Chrome.app`) and only redraws while the Code view is open.
+The terminal picture is a headless Google Chrome screenshot of that page (`/Applications/Google Chrome.app`) and only redraws while the Code view is open.
 
 ### Develop
 

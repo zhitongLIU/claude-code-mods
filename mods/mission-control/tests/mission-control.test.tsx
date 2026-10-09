@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { edges, importsOf, layout, svg, titleOf, wrapAll } from '../hooks/map'
+import { edges, importsOf, layout, mapData, titleOf } from '../hooks/map'
 import { label, lines, summary } from '../hooks/tree'
 import { cap } from '../hooks/register'
 
@@ -35,15 +35,16 @@ function engine(on: any, opts: { noChrome?: boolean } = {}) {
 
 describe('mission-control', () => {
   test('bug fixes from the demo video', () => {
-    // 1. An import that skips a column arcs over the card between instead of hiding behind it.
+    // 1. A chain of imports lands in one column per depth, with an edge per import, a→c skipping b's column.
     const f = (path: string, imports: string[]) => ({ path, act: 'edit' as const, at: 0, changedTurn: 1, imports })
     const chain = [f('/r/a.ts', ['/r/b', '/r/c']), f('/r/b.ts', ['/r/c']), f('/r/c.ts', [])]
-    const out = svg(chain, { width: 1200, height: 600, at: 99_999, turn: 1 })
-    const paths = [...out.matchAll(/<path d="M(-?[\d.]+),(-?[\d.]+) C-?[\d.]+,(-?[\d.]+)/g)].map(m => ({ y: Number(m[2]), peak: Number(m[3]) }))
-    expect(paths).toHaveLength(3)
-    expect(paths.some(p => p.peak < p.y - 20)).toBe(true) // the a → c arrow goes up and over
-    // 4. A small graph in a roomy picture is drawn larger, text included.
-    expect(out).toContain('scale(1.500)')
+    const out = mapData(chain, { at: 99_999, turn: 1 })
+    expect(out.columns.map(col => col.map(c => c.title))).toEqual([['a.ts'], ['b.ts'], ['c.ts']])
+    expect(out.edges).toEqual([
+      { from: '/r/a.ts', to: '/r/b.ts', hot: true },
+      { from: '/r/a.ts', to: '/r/c.ts', hot: true },
+      { from: '/r/b.ts', to: '/r/c.ts', hot: true },
+    ])
   })
 
 
@@ -67,7 +68,7 @@ describe('mission-control', () => {
     await $.command.run({ command: 'mission', args: 'code' } as any)
     const pane = await $.ui.mount({ plugin: 'mission', surface: 'terminal', ...PANE } as any)
     await $.tool.call({ tool: 'Read', file_path: '/repo/src/a.ts' } as any)
-    await mockClock.advance(800)
+    await mockClock.advance(1600)
     expect(await pane.find({ type: 'Text', text: /needs Google Chrome/ })).toBeDefined()
     expect(runs.some(a => a[0] === 'sh')).toBe(false)
     await pane.unmount()
@@ -112,7 +113,7 @@ describe('mission-control', () => {
     expect(ls[3]?.status).toBe('failed')
   })
 
-  test('the code map finds imports, columns and draws an SVG', () => {
+  test('the code map finds imports, columns and hands the page its data', () => {
     expect(importsOf('/r/src/pages/login.tsx', "import { a } from '../auth/session'\nconst b = require('./x.js')")).toEqual(['/r/src/auth/session', '/r/src/pages/x'])
     expect(importsOf('/r/app/views.py', 'from .models import User\nfrom ..core.db import q')).toEqual(['/r/app/models', '/r/core/db'])
     const files = [
@@ -121,14 +122,12 @@ describe('mission-control', () => {
     ]
     expect(edges(files)).toEqual([{ from: '/r/a.ts', to: '/r/b.ts' }])
     expect(layout(files, edges(files))).toEqual([['/r/a.ts'], ['/r/b.ts']])
-    const out = svg(files, { width: 800, height: 400, at: 99_999, turn: 2 })
-    expect(out).toContain('1 changed')
-    expect(out).toContain('adds a &amp; b &lt;check&gt;')
+    const out = mapData(files, { at: 99_999, turn: 2 })
+    expect(out.changed).toBe(1)
+    expect(out.columns.flat().find(c => c.title === 'b.ts')).toMatchObject({ state: 'changed', why: 'adds a & b <check>' }) // text stays text: the page sets it with textContent
     const regs = ['/m/merge-gate/hooks/register.tsx', '/m/snake/hooks/register.tsx']
     expect(titleOf(regs[0] as string, regs)).toBe('merge-gate › register.tsx')
     expect(titleOf('/m/a/login.tsx', regs)).toBe('login.tsx')
-    expect(wrapAll('Added userId validation before login', 20)).toEqual(['Added userId', 'validation before', 'login'])
-    expect(wrapAll('short', 20)).toEqual(['short'])
   })
 
   test('the "why" is only asked for once the code map is on screen', async ($, on) => {
@@ -137,12 +136,12 @@ describe('mission-control', () => {
     await $.turn.start({ text: 'fix the login bug', turnId: 't1' } as any)
     await $.tool.call({ tool: 'Edit', file_path: '/repo/src/auth/session.ts', old_string: 'a', new_string: 'b' } as any)
     await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1 } as any)
-    await clock.advance(800)
+    await clock.advance(1600)
     expect(models).toHaveLength(0) // nobody is looking: no model call
     await $.command.run({ command: 'mission', args: 'code' } as any)
     await clock.advance(1600)
     expect(models).toHaveLength(1) // looking now: one batched call for what changed
-    expect(writes['/tmp/mission-control/map.svg'] ?? '').toContain('tokens now expire')
+    expect(writes['/tmp/mission-control/data.js'] ?? '').toContain('tokens now expire')
     await $.command.run({ command: 'mission', args: 'code' } as any)
     await clock.advance(1600)
     expect(models).toHaveLength(1) // already explained: not asked twice
@@ -176,16 +175,16 @@ describe('mission-control', () => {
 
     await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1 } as any)
     await pane.press({ key: 'code' })
-    await clock.advance(800) // the map draws a moment after a change
-    const map = writes['/tmp/mission-control/map.svg'] ?? ''
+    await clock.advance(1600) // the map draws a moment after a change
+    const map = writes['/tmp/mission-control/data.js'] ?? ''
     expect(map).toContain('login.tsx')
     expect(map).toContain('session.ts')
     expect(map).not.toContain('v2.png')
-    expect(map).toContain('marker-end="url(#a)"') // the import arrow login → session
+    expect(map).toContain('"from":"/repo/src/pages/login\\u002etsx"'.replace('\\u002e', '.')) // the import edge login → session
     expect(runs.some(a => a[0] === 'sh' && a.includes('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'))).toBe(true)
     expect(await pane.find({ type: 'Image' })).toBeDefined()
-    await clock.advance(800) // the "why" lines redraw the map
-    const drawn = writes['/tmp/mission-control/map.svg'] ?? ''
+    await clock.advance(1600) // the "why" lines redraw the map
+    const drawn = writes['/tmp/mission-control/data.js'] ?? ''
     expect(drawn).toContain('tokens now expire') // the why, wrapped, never cut
     expect(drawn).toContain('after an hour')
     await pane.unmount()
