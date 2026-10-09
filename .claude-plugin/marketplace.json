@@ -1,0 +1,15 @@
+{
+  "name": "zhitong-mods",
+  "description": "Zhitong's Claude Code mods.",
+  "owner": {
+    "name": "zhitongLIU"
+  },
+  "plugins": [
+    {
+      "name": "mission",
+      "description": "/mission opens a live map of the main agent, its subagents and every tool call, plus a code map of the files they touch. /mission:browser opens the code map in a live-refreshing browser tab.",
+      "version": "0.2.0",
+      "source": "./mods/mission-control"
+    }
+  ]
+}
