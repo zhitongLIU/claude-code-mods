@@ -1,0 +1,7 @@
+.claude-plugin/types/
+node_modules/
+.DS_Store
+.playwright-mcp/
+# built from private tickets: never publish
+mods/mission-control/prototypes/plan-tab/data.js
+mods/mission-control/prototypes/plan-tab/extracted/

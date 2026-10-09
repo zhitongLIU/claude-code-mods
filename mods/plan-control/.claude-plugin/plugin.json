@@ -1,0 +1,10 @@
+{
+  "name": "plan-control",
+  "version": "0.2.0",
+  "description": "/plan-control opens a live map of Obeya tickets and local plans: dependencies, the interfaces each provides and consumes, mismatches, pull requests. One map per session.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Zhitong Liu",
+    "url": "https://github.com/zhitongLIU"
+  }
+}

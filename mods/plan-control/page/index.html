@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan Control</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { --bg:#0d1015; --card:#151922; --line:#2a3140; --text:#e8ebf2; --dim:#7d8698; --faint:#4b5263;
+          --edge:#3a4252; --edge-hot:#8fa0c0; --read:#5aa9ff; --edit:#ffa24c; --changed:#3ddc84; --flag:#ff5fa8;
+          --http:#5aa9ff; --kafka:#c792ea; --db:#ffa24c; --graphql:#ff7ab8; --email:#7fdbca; --flag-k:#ffbe3c; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { display: flex; flex-direction: column; background: var(--bg); color: var(--text);
+         font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background-image: radial-gradient(#1a1f28 1px, transparent 1px); background-size: 22px 22px; overflow: hidden; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+  header { display: flex; align-items: center; gap: 10px; padding: 14px 20px 8px; flex-wrap: wrap; }
+  h1 { margin: 0 12px 0 0; font-size: 20px; font-weight: 700; }
+  .chip { padding: 4px 12px; border: 1px solid var(--line); border-radius: 999px; color: var(--dim); background: rgba(255,255,255,.02); white-space: nowrap; }
+  .chip b { color: var(--text); font-weight: 600; }
+  .chip.bad b { color: var(--flag); }
+  .chip.link { cursor: pointer; } .chip.link:hover { border-color: var(--flag); }
+  #add { min-width: 280px; background: #0b0e13; color: var(--text); border: 1px solid var(--line); border-radius: 999px; padding: 5px 14px; font: inherit; }
+  #add:focus { outline: none; border-color: #4a5a78; }
+  #note { color: var(--dim); font-size: 12px; }
+  .hint { margin-left: auto; color: var(--faint); font-size: 12px; }
+
+  #legend { display: flex; gap: 16px; padding: 0 20px 8px; color: var(--dim); font-size: 12px; flex-wrap: wrap; }
+  #legend span { display: inline-flex; align-items: center; gap: 6px; }
+  #legend svg { overflow: visible; }
+
+  #stage { position: relative; flex: 1; overflow: hidden; cursor: grab; }
+  #stage.drag { cursor: grabbing; }
+  #world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  #edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+  #edges path.hit { pointer-events: stroke; cursor: pointer; }
+  #empty[hidden] { display: none; }
+  #empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 14px; text-align: center; line-height: 1.8; }
+
+  .lane { position: absolute; border: 1.5px dashed var(--line); border-radius: 18px; background: rgba(255,255,255,.015); }
+  .lane-title { position: absolute; left: 18px; top: 10px; font-size: 11.5px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+  .col-title { position: absolute; font-size: 11px; color: var(--faint); letter-spacing: .06em; text-transform: uppercase; }
+
+  .card { position: absolute; width: 250px; height: 104px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--card);
+          cursor: pointer; transition: border-color .15s, box-shadow .15s, opacity .15s; overflow: hidden; }
+  .card:hover { border-color: #4a5a78; }
+  .card .top { display: flex; align-items: center; gap: 8px; }
+  .card .key { font-weight: 700; font-size: 12.5px; }
+  .card .status { margin-left: auto; font-size: 10.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+  .card .title { margin-top: 5px; font-size: 12px; color: #c4cad6; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .card .meta { position: absolute; left: 14px; right: 14px; bottom: 8px; display: flex; gap: 6px; font-size: 10.5px; color: var(--dim); overflow: hidden; white-space: nowrap; }
+  .card .meta span { padding: 0 6px; border-radius: 6px; background: rgba(255,255,255,.04); }
+  .card .meta .bad { color: var(--flag); background: rgba(255,95,168,.1); }
+  .card.done { opacity: .62; }
+  .card.ready { border-color: var(--changed); box-shadow: 0 0 0 1px var(--changed), 0 0 22px rgba(61,220,132,.25); }
+  .card.loading { border-style: dashed; opacity: .7; }
+  .card.loading .title { color: var(--dim); font-style: italic; }
+  .card.ghost { border-style: dashed; background: transparent; opacity: .75; }
+  .card.ghost .title { color: var(--dim); }
+  .card { cursor: grab; }
+  .card .reset { margin-left: 2px; background: transparent; border: 0; color: var(--dim); cursor: pointer; font-size: 13px; padding: 0 2px; line-height: 1; }
+  .card .reset:hover { color: var(--text); }
+  .card.sel { border-color: #9fb4ff; box-shadow: 0 0 0 2px #9fb4ff; opacity: 1; }
+  .card.mute { opacity: .25; }
+  .ready-tag { color: var(--changed); font-weight: 600; }
+  button.mini { background: transparent; color: var(--read); border: 1px solid var(--read); border-radius: 999px; padding: 0 8px; font: inherit; font-size: 10.5px; cursor: pointer; }
+  button.mini:hover { background: rgba(90,169,255,.12); }
+
+  .s-done { color: var(--changed); } .s-in_dev, .s-in_review, .s-in-progress { color: var(--edit); } .s-plan_review { color: var(--read); }
+  .s-planning, .s-todo, .s-loading, .s-ghost, .s-ready-for-agent { color: var(--dim); } .s-blocked { color: var(--flag); }
+
+  .elabel { position: absolute; z-index: 3; transform: translate(-50%, -50%); padding: 2px 8px; border-radius: 999px; font-size: 10.5px; white-space: nowrap;
+            background: #10141b; border: 1px solid var(--edge); color: var(--dim); cursor: pointer; }
+  .elabel:hover { color: var(--text); border-color: var(--edge-hot); }
+  .elabel.bad { border-color: var(--flag); color: var(--flag); }
+  .k { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
+
+  #drawer { position: absolute; left: 0; right: 0; bottom: 0; height: 46%; background: #0f1319; border-top: 1px solid var(--line);
+            transform: translateY(100%); transition: transform .22s ease; display: flex; flex-direction: column; z-index: 5; }
+  #drawer.open { transform: none; }
+  #drawer .bar { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  #drawer .bar h2 { margin: 0; font-size: 15px; }
+  #drawer .bar .x { margin-left: auto; cursor: pointer; color: var(--dim); font-size: 18px; }
+  #drawer .body { overflow: auto; padding: 14px 20px 30px; }
+  .sec { margin: 4px 0 16px; }
+  .sec h3 { margin: 0 0 8px; font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+  .row { display: flex; gap: 8px; align-items: baseline; margin: 3px 0; }
+  .row .lbl { color: var(--dim); min-width: 100px; }
+  .pill { display: inline-block; padding: 1px 8px; margin: 0 4px 4px 0; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; }
+  .pill.declared { border-style: solid; } .pill.extracted { border-style: dashed; } .pill.inferred { border-style: dotted; color: var(--dim); }
+  .iface { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+  .iface .id { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .iface .src { color: var(--dim); font-size: 11.5px; margin-left: 6px; }
+  .delta { margin: 8px 0 0; padding: 6px 0; border-radius: 6px; background: #0b0e13; font: 12px/1.6 ui-monospace, Menlo, monospace; }
+  .delta div { padding: 0 10px; white-space: pre-wrap; }
+  .delta .add { color: #7ee2a8; background: rgba(61,220,132,.07); }
+  .delta .chg { color: #ffd27a; background: rgba(255,190,60,.07); }
+  .delta .del { color: #ff8a8a; background: rgba(255,90,90,.07); }
+  .delta .miss { color: var(--flag); background: rgba(255,95,168,.12); }
+  .delta .ctx { color: var(--dim); }
+  .ev { margin: 6px 0 0; padding-left: 10px; border-left: 2px solid var(--line); color: #aab2c2; font-size: 12px; font-style: italic; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .two h4 { margin: 0 0 4px; font-size: 11.5px; color: var(--dim); font-weight: 600; }
+  .warn { color: var(--flag); font-size: 12px; margin-top: 6px; }
+  .files code { display: block; color: #aab2c2; font-size: 12px; }
+  .empty { color: var(--faint); }
+  .issue select { margin-left: 8px; background: #0b0e13; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; font: inherit; font-size: 12px; }
+  button.main { background: #2b4fd8; color: #fff; border: 0; border-radius: 8px; padding: 6px 14px; font: inherit; font-weight: 600; cursor: pointer; }
+  textarea.say { width: 100%; box-sizing: border-box; min-height: 220px; resize: vertical; margin-top: 6px; background: #0b0e13; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  textarea.say:focus { outline: none; border-color: #2b4fd8; }
+  .sayrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  button.ghostbtn { background: transparent; color: var(--dim); border: 1px solid var(--line); border-radius: 8px; padding: 5px 12px; font: inherit; cursor: pointer; }
+  a.pr { padding: 0 6px; border-radius: 6px; border: 1px solid currentColor; text-decoration: none; font-size: 10.5px; white-space: nowrap; }
+  #drawer a.pr { font-size: 12px; padding: 1px 8px; border-radius: 999px; }
+  a.pr:hover { background: rgba(255,255,255,.06); }
+  .pr-open { color: var(--changed); } .pr-merged { color: #b392f0; } .pr-draft { color: var(--dim); } .pr-closed { color: var(--faint); }
+  a.tk { color: inherit; text-decoration: none; }
+  a.tk:hover { color: #9fb4ff; text-decoration: underline; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Plan Control</h1>
+  <span id="chips"></span>
+  <input id="add" placeholder="+ add: CAO-123, an Obeya link or a plan path" autocomplete="off">
+  <button class="ghostbtn" id="refresh" title="re-read every plan file, and ask Claude to read every Obeya ticket again">↻ Refresh</button>
+  <span id="note"></span>
+  <span class="hint">scroll zooms · drag pans or moves a box · double-click a moved box (or r for all) puts it back · double-click fits · esc closes</span>
+</header>
+<div id="legend"></div>
+<div id="stage">
+  <div id="world"><svg id="edges"></svg></div>
+  <div id="empty" hidden></div>
+  <div id="drawer"><div class="bar"><h2 id="dtitle"></h2><span class="x" id="dclose">✕</span></div><div class="body" id="dbody"></div></div>
+</div>
+
+<script>
+(function () {
+  var CARD_W = 250, CARD_H = 104, COL_W = 330, ROW_H = 126, LANE_PAD_TOP = 40, LANE_PAD = 22, LANE_GAP = 26, LEFT = 30, TOP = 40
+  var KIND_COLOR = { http: 'var(--http)', kafka: 'var(--kafka)', db: 'var(--db)', graphql: 'var(--graphql)', email: 'var(--email)', flag: 'var(--flag-k)', env: 'var(--flag-k)' }
+  var RANK = { declared: 3, extracted: 2, inferred: 1 }
+  var GREEN = '#3ddc84', PINK = '#ff5fa8', GREY = '#4a5468', HOT = '#8fa0c0'
+  var NS = 'http://www.w3.org/2000/svg'
+  var served = location.protocol.indexOf('http') === 0
+  // Kept across redraws: the view, what is selected, the choices made on mismatches.
+  var ui = { view: { x: 0, y: 0, k: 1 }, fitted: false, current: null, fix: {}, off: {}, W: 0, H: 0, select: function () {}, resetAll: function () {},
+             moved: {}, cardDrag: null, dragged: false,
+             drafts: {} } // drafts: the prompt text edited by hand, per composer → { text, base }, base the machine text it started from // moved: boxes dragged on this page, key → {x, y}, or null once put back
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] }) }
+  function el(tag, cls, html) { var n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n }
+  function kindOf(id) { return String(id).split(' ')[0] }
+  function shortId(id) {
+    var p = String(id).split(' ')
+    if (p[0] === 'http') return p[2] + ' ' + p.slice(3).join(' ').replace(/^\/api\/v\d+\//, '…/')
+    if (p[0] === 'kafka') return p.slice(1).join(' ')
+    return p.slice(2).join(' ') || p.slice(1).join(' ')
+  }
+  // the field a delta line is about, as the mod reads it (build.ts fieldOf / sameField)
+  function fieldOf(line) { var m = /^[+~-]\s*(?:(?:header|body|query|param|payload|request|response(?:\s+\d+)?)[\s.]+)?([^:#\s,(]+)/i.exec(String(line).trim()); return m ? m[1] : null }
+  function inList(f, list) { return (list || []).some(function (x) { return x === f || x.slice(-f.length - 1) === '.' + f || f.slice(-x.length - 1) === '.' + x }) }
+  function opOf(line) { var c = String(line).trim()[0]; return c === '+' ? 'add' : c === '~' ? 'chg' : c === '-' ? 'del' : 'ctx' }
+
+  function post(name, body) {
+    if (!served) return Promise.reject(new Error('no server'))
+    return fetch(location.pathname.replace(/[^/]*$/, '') + name, { method: 'POST', body: JSON.stringify(body) }).then(function (r) { if (!r.ok) throw new Error(String(r.status)) })
+  }
+  function note(text) { document.getElementById('note').textContent = text }
+  // asks Claude to read the tickets again from Obeya: 'all', or one key
+  function refresh(what) {
+    post('refresh', { id: what }).then(function () { note('refreshing ' + (what === 'all' ? 'every ticket' : what.split('/').pop()) + ': plan files now, Obeya tickets once Claude reads them') }, function () { note('No server: run /plan-control refresh ' + what) })
+  }
+  document.getElementById('refresh').addEventListener('click', function () { refresh('all') })
+
+  document.getElementById('add').addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Enter') return
+    var v = ev.target.value.trim()
+    if (!v) return
+    post('add', { text: v }).then(function () { ev.target.value = ''; note('added: ' + v) }, function () { note('No server: run /plan-control add ' + v) })
+  })
+
+  // ---- one full drawing of the plan ----
+  function render(PLAN) {
+    var tickets = (PLAN.tickets || []).map(function (t) { return Object.assign({}, t) })
+    var alias = PLAN.aliases || {}
+    var real = function (k) { return alias[k] || k }
+    var byKey = {}
+    tickets.forEach(function (t) { byKey[t.key] = t; ['provides', 'consumes', 'blockedBy', 'files', 'prs'].forEach(function (f) { t[f] = t[f] || [] }) })
+
+    // Tickets the map names but does not hold: ghosts, each with an add button.
+    var refs = {}
+    tickets.forEach(function (t) {
+      t.blockedBy.forEach(function (b) { refs[real(b.key)] = 1 })
+      t.consumes.forEach(function (c) { if (c.from) refs[real(c.from)] = 1 })
+    })
+    Object.keys(refs).forEach(function (k) {
+      if (byKey[k] || !/^[A-Z][A-Z0-9]+-\d+$/.test(k)) return
+      var g = { key: k, kind: 'ghost', title: 'not on the map', status: 'ghost', service: 'not on the map', provides: [], consumes: [], blockedBy: [], files: [], prs: [], url: (PLAN.ticketUrl || '').replace('{key}', k) }
+      tickets.push(g); byKey[k] = g
+    })
+
+    var providersOf = {}
+    tickets.forEach(function (t) { t.provides.forEach(function (p) { (providersOf[p.id] = providersOf[p.id] || []).push(t.key) }) })
+    var edges = {}
+    function edge(from, to) {
+      from = real(from); to = real(to)
+      if (from === to || !byKey[from] || !byKey[to]) return null
+      var k = from + '→' + to
+      return edges[k] = edges[k] || { key: k, from: from, to: to, deps: [], ifaces: [] }
+    }
+    tickets.forEach(function (t) {
+      t.blockedBy.forEach(function (b) { var e = edge(b.key, t.key); if (e) e.deps.push(b) })
+      // An (existing, unchanged) interface is not matched to a provider. The field checks come from the mod (checks).
+      t.consumes.forEach(function (c) {
+        var froms = c.from ? [c.from] : c.existing ? [] : (providersOf[c.id] || []).filter(function (k) { return k !== t.key })
+        froms.forEach(function (f) {
+          var e = edge(f, t.key)
+          if (!e) return
+          var from = byKey[real(f)]
+          var prov = (from.provides || []).filter(function (p) { return p.id === c.id })[0]
+          var chk = (c.checks || {})[real(f)] || { missing: [], removed: [], noProvider: false, unchecked: from.kind === 'ghost' || from.status === 'loading' }
+          e.ifaces.push({ id: c.id, consumer: c, provider: prov || null, missing: chk.missing, removed: chk.removed, noProvider: chk.noProvider, unchecked: chk.unchecked, suggestion: chk.suggestion })
+          if (!c.from) e.deps.push({ key: f, source: 'inferred', evidence: 'same interface id provided by ' + f })
+        })
+      })
+    })
+    var edgeList = Object.keys(edges).map(function (k) { return edges[k] })
+    edgeList.forEach(function (e) {
+      e.source = e.deps.reduce(function (best, d) { return RANK[d.source] > RANK[best] ? d.source : best }, e.ifaces.some(function (i) { return i.consumer.from }) ? 'declared' : 'inferred')
+      e.done = byKey[e.from].status === 'done'
+      e.bad = e.ifaces.some(function (i) { return i.missing.length || i.noProvider })
+    })
+    // An ordering edge a longer path already implies is drawn only when its ticket is selected.
+    function reaches(from, to, skip) {
+      var seen = {}, stack = [from]
+      while (stack.length) {
+        var k = stack.pop()
+        edgeList.forEach(function (e) { if (e.from === k && e.key !== skip && !seen[e.to]) { seen[e.to] = 1; stack.push(e.to) } })
+      }
+      return !!seen[to]
+    }
+    edgeList.forEach(function (e) { e.redundant = !e.ifaces.length && reaches(e.from, e.to, e.key) })
+    tickets.forEach(function (t) {
+      var ins = edgeList.filter(function (e) { return e.to === t.key })
+      t.ready = t.kind !== 'ghost' && t.status !== 'done' && t.status !== 'loading' && ins.every(function (e) { return e.done })
+      t.external = t.consumes.filter(function (c) { return c.existing || (!c.from && !(providersOf[c.id] || []).some(function (k) { return k !== t.key })) })
+      t.bad = ins.some(function (e) { return e.bad })
+    })
+    var issues = []
+    edgeList.forEach(function (e) {
+      e.ifaces.forEach(function (i) {
+        if (i.noProvider) return issues.push({ kind: 'missing interface', e: e, i: i })
+        i.missing.forEach(function (f) { issues.push({ kind: i.removed.indexOf(f) >= 0 ? 'removed field still read' : 'missing field', e: e, i: i, field: f }) })
+      })
+    })
+    issues.forEach(function (x, n) { x.n = n; x.sig = x.e.key + '|' + x.i.id + '|' + (x.field || ''); x.on = !ui.off[x.sig]; x.fix = ui.fix[x.sig] || 'decide' })
+
+    // ---- layout: columns by dependency depth, one lane per service ----
+    var depth = {}
+    tickets.forEach(function (t) { depth[t.key] = 0 })
+    for (var pass = 0; pass < tickets.length; pass++) {
+      var moved = false
+      // capped, so a dependency cycle cannot push columns out forever; its edges are drawn going back
+      edgeList.forEach(function (e) { if (depth[e.from] + 1 > depth[e.to] && depth[e.from] + 1 < 8) { depth[e.to] = depth[e.from] + 1; moved = true } })
+      if (!moved) break
+    }
+    var services = []
+    tickets.forEach(function (t) { if (services.indexOf(t.service) < 0) services.push(t.service) })
+    var order = PLAN.serviceOrder || []
+    var rank = function (s) { return s === 'not on the map' ? 999 : order.indexOf(s) < 0 ? 99 : order.indexOf(s) }
+    services.sort(function (a, b) { return rank(a) - rank(b) })
+    var maxDepth = tickets.length ? Math.max.apply(null, tickets.map(function (t) { return depth[t.key] })) : 0
+    var pos = {}, lanes = [], y = TOP + 22
+    services.forEach(function (s) {
+      var inLane = tickets.filter(function (t) { return t.service === s })
+      var stacks = {}
+      inLane.forEach(function (t) { (stacks[depth[t.key]] = stacks[depth[t.key]] || []).push(t) })
+      var rows = Math.max.apply(null, Object.keys(stacks).map(function (d) { return stacks[d].length }))
+      Object.keys(stacks).forEach(function (d) { stacks[d].forEach(function (t, i) { pos[t.key] = { x: LEFT + LANE_PAD + Number(d) * COL_W, y: y + LANE_PAD_TOP + i * ROW_H } }) })
+      var h = LANE_PAD_TOP + rows * ROW_H - (ROW_H - CARD_H) + LANE_PAD
+      lanes.push({ name: s, y: y, h: h, n: inLane.length })
+      y += h + LANE_GAP
+    })
+    var W = LEFT + LANE_PAD * 2 + (maxDepth + 1) * COL_W - (COL_W - CARD_W), H = y
+    ui.W = W; ui.H = H
+    // Boxes the person dragged: what this page just moved, else what the map file holds. null = put back.
+    var saved = PLAN.positions || {}
+    tickets.forEach(function (t) {
+      var o = t.key in ui.moved ? ui.moved[t.key] : saved[t.key]
+      if (o) { pos[t.key] = { x: o.x, y: o.y }; t.moved = true }
+    })
+
+    // ---- draw ----
+    var world = document.getElementById('world'), svg = document.getElementById('edges')
+    Array.prototype.slice.call(world.children).forEach(function (n) { if (n !== svg) world.removeChild(n) })
+    while (svg.firstChild) svg.removeChild(svg.firstChild)
+    world.style.width = W + 'px'; world.style.height = H + 'px'
+    svg.setAttribute('width', W); svg.setAttribute('height', H)
+    var empty = document.getElementById('empty')
+    empty.hidden = tickets.length > 0
+    empty.innerHTML = (PLAN.missing || []).length ? 'Reading ' + esc(PLAN.missing.join(', ')) + ' from Obeya…' : 'The map is empty.<br>Type a ticket key, an Obeya link or a plan path in <b>+ add</b>, or run <code>/plan-control add CAO-219</code>.'
+
+    function tk(t, text) {
+      var label = esc(text == null ? t.key : text)
+      return t.url ? '<a class="tk" href="' + esc(t.url) + '" target="_blank" rel="noopener" title="open ' + esc(t.path || t.key) + '">' + label + '</a>' : label
+    }
+    function tkKey(k, text) { return byKey[k] ? tk(byKey[k], text) : esc(text == null ? k : text) }
+    function prLink(pr, long) {
+      var text = (long ? pr.repo + ' ' : '') + 'PR #' + pr.number + (long ? ' · ' + pr.state : '')
+      return '<a class="pr pr-' + esc(pr.state) + '" href="' + esc(pr.url) + '" target="_blank" rel="noopener" title="' + esc(pr.repo + ' #' + pr.number + ' · ' + pr.state) + '">' + esc(text) + '</a>'
+    }
+
+    for (var d = 0; d <= maxDepth && tickets.length; d++) {
+      var ct = el('div', 'col-title', d === 0 ? 'can start' : 'wave ' + (d + 1))
+      ct.style.left = (LEFT + LANE_PAD + d * COL_W) + 'px'; ct.style.top = TOP + 'px'
+      world.appendChild(ct)
+    }
+    lanes.forEach(function (l) {
+      var n = el('div', 'lane', '<div class="lane-title">' + esc(l.name) + ' · ' + l.n + '</div>')
+      n.style.left = LEFT + 'px'; n.style.top = l.y + 'px'; n.style.width = (W - LEFT) + 'px'; n.style.height = l.h + 'px'
+      world.insertBefore(n, svg)
+    })
+
+    var cards = {}
+    tickets.forEach(function (t) {
+      var p = pos[t.key]
+      var c = el('div', 'card' + (t.status === 'done' ? ' done' : '') + (t.ready ? ' ready' : '') + (t.status === 'loading' ? ' loading' : '') + (t.kind === 'ghost' ? ' ghost' : '') + (t.moved ? ' moved' : ''))
+      c.style.left = p.x + 'px'; c.style.top = p.y + 'px'
+      var meta = []
+      if (t.kind === 'ghost') meta.push('<button class="mini" data-add="' + esc(t.key) + '">+ add</button>')
+      t.prs.forEach(function (pr) { meta.push(prLink(pr)) })
+      if (t.ready) meta.push('<span class="ready-tag">ready</span>')
+      if (t.provides.length) meta.push('<span>⇢ ' + t.provides.length + ' provides</span>')
+      if (t.external.length) meta.push('<span title="existing interfaces it relies on">⇠ ' + t.external.length + ' existing</span>')
+      if (t.bad) meta.push('<span class="bad">⚑ mismatch</span>')
+      var title = t.status === 'loading' ? 'reading from Obeya…' : t.title
+      c.innerHTML = '<div class="top"><span class="key">' + tk(t) + '</span>' + (t.moved ? '<button class="reset" title="put the box back (or double-click it)">↺</button>' : '') +
+        '<span class="status s-' + esc(t.status) + '">' + esc(String(t.status).replace(/_/g, ' ')) + '</span></div>' +
+        '<div class="title">' + esc(title) + '</div><div class="meta">' + meta.join('') + '</div>'
+      c.addEventListener('click', function (ev) {
+        ev.stopPropagation()
+        if (ui.dragged) { ui.dragged = false; return } // the end of a drag, not a click
+        if (ev.target.closest('button.reset')) return putBack(t.key)
+        var b = ev.target.closest('button[data-add]')
+        if (b) return void post('add', { text: b.dataset.add }).then(function () { note('added: ' + b.dataset.add) }, function () { note('No server: run /plan-control add ' + b.dataset.add) })
+        if (!ev.target.closest('a')) select({ ticket: t.key })
+      })
+      c.addEventListener('dblclick', function (ev) { ev.stopPropagation(); if (t.moved) putBack(t.key) })
+      // Drag a box out of a tangle of arrows; its arrows follow, and the map file keeps where it was dropped.
+      c.addEventListener('mousedown', function (ev) {
+        if (ev.button !== 0 || ev.target.closest('a,button')) return
+        ev.stopPropagation()
+        var start = { x: pos[t.key].x, y: pos[t.key].y }
+        ui.cardDrag = {
+          sx: ev.clientX, sy: ev.clientY, moved: false,
+          move: function (dx, dy) {
+            pos[t.key] = { x: Math.round(start.x + dx / ui.view.k), y: Math.round(start.y + dy / ui.view.k) }
+            c.style.left = pos[t.key].x + 'px'; c.style.top = pos[t.key].y + 'px'
+            edgeList.forEach(function (e) { if (e.from === t.key || e.to === t.key) place(e) })
+          },
+          end: function () {
+            ui.moved[t.key] = pos[t.key]
+            post('move', { text: t.key + ' ' + pos[t.key].x + ' ' + pos[t.key].y }).catch(function () {})
+            setTimeout(function () { render(PLAN) }, 0) // the box gets its ↺ at once
+          },
+        }
+      })
+      world.appendChild(c)
+      cards[t.key] = c
+    })
+
+    var defs = document.createElementNS(NS, 'defs')
+    ;[['norm', GREY], ['hot', HOT], ['bad', PINK], ['done', GREEN]].forEach(function (k) {
+      var m = document.createElementNS(NS, 'marker')
+      m.setAttribute('id', 'a-' + k[0]); m.setAttribute('viewBox', '0 0 10 10'); m.setAttribute('refX', '9'); m.setAttribute('refY', '5')
+      m.setAttribute('markerWidth', '7'); m.setAttribute('markerHeight', '7'); m.setAttribute('orient', 'auto-start-reverse')
+      var p = document.createElementNS(NS, 'path'); p.setAttribute('d', 'M0,0 L10,5 L0,10 z'); p.setAttribute('fill', k[1])
+      m.appendChild(p); defs.appendChild(m)
+    })
+    svg.appendChild(defs)
+
+    // The curve between two boxes as they stand now: right side to left side, or bottom to top when the
+    // target sits at or behind the source.
+    function curve(e) {
+      var a = pos[e.from], b = pos[e.to]
+      var x1 = a.x + CARD_W, y1 = a.y + CARD_H / 2, x2 = b.x, y2 = b.y + CARD_H / 2
+      var back = x2 <= x1
+      if (back) { x1 = a.x + CARD_W / 2; y1 = a.y + (b.y > a.y ? CARD_H : 0); x2 = b.x + CARD_W / 2; y2 = b.y + (b.y > a.y ? 0 : CARD_H) }
+      var dx = Math.max(60, Math.abs(x2 - x1) / 2)
+      return back ? [x1, y1, x1, (y1 + y2) / 2, x2, (y1 + y2) / 2, x2, y2] : [x1, y1, x1 + dx, y1, x2 - dx, y2, x2, y2]
+    }
+    // Draws an edge where its boxes are; labels sit near the consumer, clear of the boxes in between.
+    function place(e) {
+      var x = edgeEls[e.key], c = curve(e)
+      var d = 'M' + c[0] + ',' + c[1] + ' C' + c.slice(2).join(' ')
+      x.path.setAttribute('d', d); x.hit.setAttribute('d', d)
+      if (!x.lbl) return
+      var t = 0.8, u = 1 - t
+      var m = [0, 1].map(function (i) { return u * u * u * c[i] + 3 * u * u * t * c[2 + i] + 3 * u * t * t * c[4 + i] + t * t * t * c[6 + i] })
+      x.lbl.style.left = m[0] + 'px'; x.lbl.style.top = m[1] + 'px'
+    }
+    function putBack(key) {
+      ui.moved[key] = null
+      post('move', { text: key + ' reset' }).catch(function () {})
+      render(PLAN)
+    }
+    ui.resetAll = function () {
+      tickets.forEach(function (t) { if (t.moved) ui.moved[t.key] = null })
+      post('move', { text: '* reset' }).catch(function () {})
+      render(PLAN)
+    }
+
+    var edgeEls = {}
+    edgeList.forEach(function (e) {
+      var path = document.createElementNS(NS, 'path')
+      path.setAttribute('fill', 'none')
+      var col = e.bad ? PINK : e.done ? GREEN : GREY // green: the blocker is done, this link is unlocked
+      path.setAttribute('stroke', col); path.setAttribute('stroke-width', e.bad ? 2 : 1.6)
+      if (e.source === 'extracted') path.setAttribute('stroke-dasharray', '6 5')
+      if (e.source === 'inferred') path.setAttribute('stroke-dasharray', '2 5')
+      var hit = document.createElementNS(NS, 'path')
+      hit.setAttribute('fill', 'none'); hit.setAttribute('stroke', 'transparent'); hit.setAttribute('stroke-width', 12); hit.setAttribute('class', 'hit')
+      hit.addEventListener('click', function (ev) { ev.stopPropagation(); select({ edge: e.key }) })
+      svg.appendChild(path); svg.appendChild(hit)
+      var lbl = null
+      if (e.ifaces.length) {
+        var first = e.ifaces[0]
+        var txt = '<span class="k" style="background:' + (KIND_COLOR[kindOf(first.id)] || 'var(--dim)') + '"></span>' + esc(kindOf(first.id)) + ' ' + esc(shortId(first.id)) + (e.ifaces.length > 1 ? ' +' + (e.ifaces.length - 1) : '')
+        lbl = el('div', 'elabel' + (e.bad ? ' bad' : ''), (e.bad ? '⚑ ' : '') + txt)
+        lbl.addEventListener('click', function (ev) { ev.stopPropagation(); select({ edge: e.key }) })
+        world.appendChild(lbl)
+      }
+      edgeEls[e.key] = { path: path, hit: hit, lbl: lbl, col: col }
+      place(e)
+    })
+
+    // ---- header ----
+    var real4 = tickets.filter(function (t) { return t.kind !== 'ghost' })
+    var nDone = real4.filter(function (t) { return t.status === 'done' }).length
+    var nReady = real4.filter(function (t) { return t.ready }).length
+    var nIf = edgeList.reduce(function (s, e) { return s + e.ifaces.length }, 0)
+    var nHidden = edgeList.filter(function (e) { return e.redundant }).length
+    var chips = (PLAN.epics || []).map(function (ep) { return '<span class="chip"><a class="tk" href="' + esc(ep.url) + '" target="_blank" rel="noopener">' + esc(ep.key) + '</a> · ' + esc(ep.title) + '</span>' })
+    chips.push('<span class="chip"><b>' + real4.length + '</b> tickets · <b>' + nDone + '</b> done · <b>' + nReady + '</b> ready</span>')
+    chips.push('<span class="chip" title="ordering edges a longer path already implies are drawn only when their ticket is selected"><b>' + edgeList.length + '</b> dependencies (' + nHidden + ' implied) · <b>' + nIf + '</b> interfaces</span>')
+    chips.push('<span class="chip link' + (issues.length ? ' bad' : '') + '" id="issues-chip"><b>' + issues.length + '</b> mismatches ›</span>')
+    document.getElementById('chips').innerHTML = chips.join(' ')
+    document.getElementById('issues-chip').addEventListener('click', function (ev) { ev.stopPropagation(); select({ issues: true }) })
+    function legLine(dash, color) { return '<svg width="34" height="8"><line x1="0" y1="4" x2="34" y2="4" stroke="' + color + '" stroke-width="2"' + (dash ? ' stroke-dasharray="' + dash + '"' : '') + '/></svg>' }
+    document.getElementById('legend').innerHTML =
+      '<span>' + legLine('', HOT) + 'declared</span><span>' + legLine('6 5', HOT) + 'extracted from prose</span>' +
+      '<span>' + legLine('2 5', HOT) + 'inferred (same interface)</span><span>' + legLine('', GREEN) + 'unlocked (blocker done)</span>' +
+      '<span>' + legLine('', PINK) + 'interface mismatch</span>' +
+      Object.keys(KIND_COLOR).filter(function (k) { return k !== 'env' }).map(function (k) { return '<span><span class="k" style="background:' + KIND_COLOR[k] + '"></span>' + k + '</span>' }).join('')
+
+    // ---- drawer ----
+    var drawer = document.getElementById('drawer'), dtitle = document.getElementById('dtitle'), dbody = document.getElementById('dbody')
+    function deltaHtml(lines, missing) {
+      if (!lines || !lines.length) return '<div class="delta"><div class="ctx">(no field change listed)</div></div>'
+      return '<div class="delta">' + lines.map(function (l) {
+        var f = fieldOf(l), miss = missing && f && inList(f, missing)
+        return '<div class="' + (miss ? 'miss' : opOf(l)) + '">' + esc(l) + (miss ? '   ⚑ not provided' : '') + '</div>'
+      }).join('') + '</div>'
+    }
+    function depPill(b) { return '<span class="pill ' + esc(b.source) + '" title="' + esc(b.evidence) + '">' + tkKey(real(b.key), b.key) + ' · ' + esc(b.source) + '</span>' }
+    var SOURCE = { header: 'the plan’s ## Contract header', extracted: 'extracted from the plan’s prose (no header yet)', none: 'no Contract header, nothing extracted' }
+
+    function showTicket(t) {
+      dtitle.innerHTML = tk(t, t.key + ' ↗') + ' · ' + esc(t.title) + ' <span class="status s-' + esc(t.status) + '" style="font-size:11px;padding:1px 8px;border:1px solid currentColor;border-radius:999px;margin-left:6px">' + esc(t.status) + '</span>'
+      if (t.kind === 'ghost') {
+        dbody.innerHTML = '<div class="sec">Another ticket on the map names ' + esc(t.key) + ', but it is not on the map: its status, plan and interfaces are unknown, so links from it never count as unlocked.</div><button class="main" data-add="' + esc(t.key) + '">+ Add ' + esc(t.key) + ' to the map</button>'
+        bindAdd(); return
+      }
+      var ins = edgeList.filter(function (e) { return e.to === t.key }), outs = edgeList.filter(function (e) { return e.from === t.key })
+      var h = '<div class="sec"><h3>Contract</h3>' +
+        '<div class="row"><span class="lbl">Service</span><code>' + esc(t.service) + '</code></div>' +
+        '<div class="row"><span class="lbl">Source</span><span class="' + (t.contractSource === 'header' ? '' : 'empty') + '">' + esc(t.kind === 'file' ? t.path : SOURCE[t.contractSource] || '') + '</span></div>' +
+        '<div class="row"><span class="lbl">Pull requests</span><span>' + (t.prs.length ? t.prs.map(function (pr) { return prLink(pr, true) }).join(' ') : '<span class="empty">none opened</span>') + '</span></div>' +
+        '<div class="row"><span class="lbl">Blocked by</span><span>' + (t.blockedBy.length ? t.blockedBy.map(depPill).join('') : '<span class="empty">none</span>') + '</span></div>' +
+        '<div class="row"><span class="lbl">Unblocks</span><span>' + (outs.length ? outs.map(function (e) { return '<span class="pill">' + tkKey(e.to) + '</span>' }).join('') : '<span class="empty">none</span>') + '</span></div>' +
+        (t.ready ? '<div class="row"><span class="lbl"></span><span class="ready-tag">every blocker is done — can start now</span></div>' : '') + '</div>'
+      h += '<div class="sec"><h3>Provides</h3>' + (t.provides.length ? t.provides.map(function (p) {
+        var users = outs.filter(function (e) { return e.ifaces.some(function (i) { return i.id === p.id }) }).map(function (e) { return e.to })
+        return '<div class="iface"><span class="k" style="background:' + (KIND_COLOR[kindOf(p.id)] || 'var(--dim)') + '"></span><span class="id">' + esc(p.id) + '</span>' +
+          (users.length ? '<span class="src">→ ' + users.map(esc).join(', ') + '</span>' : '<span class="src">no consumer on the map</span>') +
+          deltaHtml(p.delta) + (p.evidence ? '<div class="ev">' + esc(p.evidence) + '</div>' : '') + '</div>'
+      }).join('') : '<div class="empty">none</div>') + '</div>'
+      h += '<div class="sec"><h3>Consumes</h3>' + (t.consumes.length ? t.consumes.map(function (c) {
+        var e = ins.filter(function (x) { return x.ifaces.some(function (i) { return i.consumer === c }) })[0]
+        var i = e && e.ifaces.filter(function (x) { return x.consumer === c })[0]
+        var src = c.from ? 'from ' + c.from : c.existing ? 'existing, unchanged' : (e ? 'matched to ' + e.from : 'no provider on the map')
+        return '<div class="iface"><span class="k" style="background:' + (KIND_COLOR[kindOf(c.id)] || 'var(--dim)') + '"></span><span class="id">' + esc(c.id) + '</span><span class="src">' + esc(src) + '</span>' +
+          (c.delta && c.delta.length ? deltaHtml(c.delta, i && i.missing) : '') +
+          (i && i.noProvider ? '<div class="warn">⚑ ' + esc(e.from) + ' does not list this interface under Provides' + (i.suggestion ? ': did you mean <code>' + esc(i.suggestion) + '</code>?' : '') + '</div>' : '') +
+          (i && i.unchecked ? '<div class="empty" style="margin-top:6px">not checked: ' + esc(e.from) + (byKey[e.from].kind === 'ghost' ? ' is not on the map' : byKey[e.from].status === 'loading' ? ' is still being read' : ' lists this interface with no field lines') + '</div>' : '') +
+          (c.existing ? '<div class="empty" style="margin-top:6px">existing, unchanged: not checked</div>' : '') +
+          (c.evidence ? '<div class="ev">' + esc(c.evidence) + '</div>' : '') + '</div>'
+      }).join('') : '<div class="empty">none</div>') + '</div>'
+      if (t.files.length) h += '<div class="sec files"><h3>Files named in the plan</h3>' + t.files.map(function (f) { return '<code>' + esc(f) + '</code>' }).join('') + '</div>'
+      h += '<div class="sec"><button class="ghostbtn" id="rf">↻ Refresh ' + esc(t.key) + '</button> ' +
+        '<button class="ghostbtn" id="rm">Remove ' + esc(t.key) + ' from the map</button></div>'
+      dbody.innerHTML = h
+      document.getElementById('rf').addEventListener('click', function () { refresh(t.path || t.key) })
+      document.getElementById('rm').addEventListener('click', function () {
+        post('remove', { id: t.path || t.key }).then(function () { select(null); note('removed: ' + t.key) }, function () { note('No server: run /plan-control remove ' + t.key) })
+      })
+    }
+
+    function showEdge(e) {
+      dtitle.innerHTML = tkKey(e.from, e.from + ' ↗') + ' → ' + tkKey(e.to, e.to + ' ↗') + ' <span style="color:var(--dim);font-weight:400;font-size:12px;margin-left:8px">' + esc(e.source) + (e.done ? ' · unlocked' : ' · ' + esc(e.from) + ' not done yet') + '</span>'
+      var h = '<div class="sec"><h3>Why ' + esc(e.to) + ' waits for ' + esc(e.from) + '</h3>' + (e.deps.length ? e.deps.map(function (b) { return '<div>' + depPill(b) + '<div class="ev">' + esc(b.evidence) + '</div></div>' }).join('') : '<div class="empty">only the interface below</div>') + '</div>'
+      h += '<div class="sec"><h3>Interfaces on this edge</h3>' + (e.ifaces.length ? e.ifaces.map(function (i) {
+        return '<div class="iface"><span class="k" style="background:' + (KIND_COLOR[kindOf(i.id)] || 'var(--dim)') + '"></span><span class="id">' + esc(i.id) + '</span>' +
+          '<div class="two" style="margin-top:8px"><div><h4>' + esc(e.from) + ' provides</h4>' + (i.provider ? deltaHtml(i.provider.delta) : '<div class="warn">' + (byKey[e.from].kind === 'ghost' ? esc(e.from) + ' is not on the map' : '⚑ not listed under ' + esc(e.from) + '’s Provides' + (i.suggestion ? ': did you mean <code>' + esc(i.suggestion) + '</code>?' : '')) + '</div>') + '</div>' +
+          '<div><h4>' + esc(e.to) + ' reads</h4>' + deltaHtml(i.consumer.delta, i.missing) + '</div></div>' +
+          (i.unchecked && i.provider ? '<div class="empty" style="margin-top:6px">not checked: ' + esc(e.from) + ' lists this interface with no field lines</div>' : '') +
+          (i.missing.length ? '<div class="warn">⚑ ' + esc(e.to) + ' reads ' + i.missing.map(esc).join(', ') + ' which ' + esc(e.from) + ' does not add</div>' : '') + '</div>'
+      }).join('') : '<div class="empty">no interface: an ordering dependency only</div>') + '</div>'
+      var mine = issues.filter(function (x) { return x.e === e })
+      if (mine.length) h += '<div class="sec"><h3>Send to Claude · ' + mine.length + ' mismatch' + (mine.length > 1 ? 'es' : '') + '</h3>' + composer('edge:' + e.key, mine) + '</div>'
+      dbody.innerHTML = h
+      if (mine.length) bindComposer('edge:' + e.key, mine)
+    }
+
+    // The prompt sent to Claude: written by the page, editable by hand. A hand edit is kept across redraws and
+    // selection changes until Reset puts the machine-written text back.
+    function composer(id, list) {
+      var base = promptFor(list), d = ui.drafts[id]
+      var edited = d && d.text !== base
+      return '<div class="sayrow"><button class="main" data-say="send">' + (served ? 'Send to Claude' : 'Copy for Claude') + ' (' + list.length + ')</button>' +
+        '<button class="ghostbtn" data-say="reset"' + (edited ? '' : ' disabled style="opacity:.4;cursor:default"') + '>Reset</button>' +
+        '<span class="empty" data-say="note">' + (edited ? (d.base !== base ? 'edited · the mismatches changed since: Reset to rewrite' : 'edited by hand') : 'add any context before sending') + '</span></div>' +
+        '<textarea class="say" spellcheck="false" data-say="text">' + esc(edited ? d.text : base) + '</textarea>'
+    }
+    function bindComposer(id, list) {
+      var q = function (n) { return dbody.querySelector('[data-say="' + n + '"]') }
+      var box = q('text'), reset = q('reset'), said = function (t) { q('note').textContent = t }
+      box.addEventListener('input', function () {
+        var base = promptFor(list)
+        if (box.value === base) delete ui.drafts[id]
+        else ui.drafts[id] = { text: box.value, base: (ui.drafts[id] && ui.drafts[id].base) || base }
+        var on = !!ui.drafts[id]
+        reset.disabled = !on; reset.style.opacity = on ? '' : '.4'; reset.style.cursor = on ? '' : 'default'
+        said(on ? 'edited by hand' : 'add any context before sending')
+      })
+      reset.addEventListener('click', function () {
+        delete ui.drafts[id]; box.value = promptFor(list)
+        reset.disabled = true; reset.style.opacity = '.4'; reset.style.cursor = 'default'
+        said('back to the machine-written version')
+      })
+      q('send').addEventListener('click', function () {
+        var text = box.value
+        if (!text.trim()) return said('Nothing to send.')
+        post('send', { text: text }).then(function () { said('Sent to this Claude session.') }, function () {
+          if (navigator.clipboard) navigator.clipboard.writeText(text).then(function () { said('Copied: paste it into Claude.') }, function () { window.prompt('Copy this:', text) })
+          else window.prompt('Copy this:', text)
+        })
+      })
+    }
+
+    function sideLine(lines, field) { return (lines || []).filter(function (l) { return fieldOf(l) === field })[0] }
+    function promptFor(list) {
+      var out = ['Plan mismatches from plan-control (' + (PLAN.title || 'map') + '). Make the Contract headers of these plans agree (format: docs/conventions/plan-contract.md).', '']
+      list.forEach(function (x, k) {
+        var e = x.e, i = x.i
+        out.push((k + 1) + '. [' + x.kind + '] ' + i.id)
+        out.push('   provider ' + e.from + ' (' + byKey[e.from].status + ') provides: ' + (i.provider ? (i.provider.delta || []).join('; ') || '(no field listed)' : 'this interface is not under its Provides'))
+        out.push('   consumer ' + e.to + ' (' + byKey[e.to].status + ') reads: ' + (x.field ? sideLine(i.consumer.delta, x.field) || x.field : (i.consumer.delta || []).join('; ') || '(no field listed)'))
+        if (x.field) out.push('   field: ' + x.field)
+        if (i.suggestion) out.push('   the provider’s closest interface id: ' + i.suggestion)
+        out.push('   fix: ' + (x.fix === 'provider' ? 'the provider plan, ' + e.from : x.fix === 'consumer' ? 'the consumer plan, ' + e.to : 'decide from both plans which side is wrong'))
+        out.push('')
+      })
+      out.push('For each one: read both tickets (obeya_get_task_context, or the plan file), decide or apply the side to fix, and show me the edit to the Contract header and to the plan body it implies.')
+      out.push('Do not call obeya_write_plan or edit a plan file until I confirm. When the plan to fix belongs to a ticket that is done, propose a follow-up sub-ticket instead of rewriting a done plan.')
+      return out.join('\n')
+    }
+    function showIssues() {
+      dtitle.innerHTML = 'Mismatches · ' + issues.length
+      if (!issues.length) { dbody.innerHTML = '<div class="empty">No mismatch: every consumer reads only what its provider declares.</div>'; return }
+      var h = '<div class="sec">' + issues.map(function (x) {
+        var e = x.e, i = x.i
+        var opt = function (v, t) { return '<option value="' + v + '"' + (x.fix === v ? ' selected' : '') + '>' + esc(t) + '</option>' }
+        return '<div class="iface issue"><label><input type="checkbox" data-n="' + x.n + '"' + (x.on ? ' checked' : '') + '> <b class="warn" style="margin:0">' + esc(x.kind) + '</b></label> ' +
+          '<span class="pill" data-edge="' + esc(e.key) + '" style="cursor:pointer">' + esc(e.from) + ' → ' + esc(e.to) + '</span>' +
+          '<select data-fix="' + x.n + '">' + opt('decide', 'let Claude decide') + opt('provider', 'fix provider · ' + e.from + (byKey[e.from].status === 'done' ? ' (done → follow-up)' : '')) + opt('consumer', 'fix consumer · ' + e.to) + '</select>' +
+          '<div class="id" style="margin-top:6px">' + esc(i.id) + (x.field ? ' · <span style="color:var(--flag)">' + esc(x.field) + '</span>' : '') + '</div></div>'
+      }).join('') + '</div>'
+      var picked = issues.filter(function (x) { return x.on })
+      h += '<div class="sec"><h3>What Claude receives</h3>' + composer('issues', picked) + '</div>'
+      dbody.innerHTML = h
+      dbody.querySelectorAll('input[data-n]').forEach(function (c) { c.addEventListener('change', function () { var x = issues[c.dataset.n]; x.on = c.checked; ui.off[x.sig] = !c.checked; showIssues() }) })
+      dbody.querySelectorAll('select[data-fix]').forEach(function (s) { s.addEventListener('change', function () { var x = issues[s.dataset.fix]; x.fix = s.value; ui.fix[x.sig] = s.value; showIssues() }) })
+      dbody.querySelectorAll('[data-edge]').forEach(function (p) { p.addEventListener('click', function () { select({ edge: p.dataset.edge }) }) })
+      bindComposer('issues', picked)
+    }
+    function bindAdd() {
+      dbody.querySelectorAll('button[data-add]').forEach(function (b) {
+        b.addEventListener('click', function () { post('add', { text: b.dataset.add }).then(function () { note('added: ' + b.dataset.add) }, function () { note('No server: run /plan-control add ' + b.dataset.add) }) })
+      })
+    }
+
+    function highlight(s) {
+      var keep = null, keepEdges = null
+      if (s && s.ticket && byKey[s.ticket]) {
+        keep = {}; keep[s.ticket] = 1; keepEdges = {}
+        edgeList.forEach(function (e) { if (e.from === s.ticket || e.to === s.ticket) { keep[e.from] = keep[e.to] = 1; keepEdges[e.key] = 1 } })
+      } else if (s && s.edge && edges[s.edge]) {
+        var e0 = edges[s.edge]; keep = {}; keep[e0.from] = keep[e0.to] = 1; keepEdges = {}; keepEdges[s.edge] = 1
+      } else if (s && s.issues) {
+        keep = {}; keepEdges = {}
+        issues.forEach(function (x) { keep[x.e.from] = keep[x.e.to] = 1; keepEdges[x.e.key] = 1 })
+      }
+      tickets.forEach(function (t) {
+        cards[t.key].classList.toggle('mute', !!keep && !keep[t.key])
+        cards[t.key].classList.toggle('sel', !!s && s.ticket === t.key)
+      })
+      edgeList.forEach(function (e) {
+        var x = edgeEls[e.key], on = keepEdges && keepEdges[e.key]
+        var shown = on || (!keepEdges && !e.redundant) || (keepEdges && !e.redundant)
+        x.path.style.display = x.hit.style.display = shown ? '' : 'none'
+        x.path.setAttribute('stroke', on && !e.bad && !e.done ? HOT : x.col)
+        x.path.setAttribute('stroke-opacity', e.done && !on ? .55 : 1)
+        x.path.setAttribute('marker-end', 'url(#a-' + (e.bad ? 'bad' : e.done ? 'done' : on ? 'hot' : 'norm') + ')')
+        x.path.style.opacity = keepEdges && !on ? .15 : 1
+        if (x.lbl) x.lbl.style.display = on || (!keepEdges && e.bad) ? '' : 'none'
+      })
+    }
+
+    function select(s) {
+      if (s && s.ticket && !byKey[s.ticket]) s = null
+      if (s && s.edge && !edges[s.edge]) s = null
+      ui.current = s
+      if (!s) { drawer.classList.remove('open'); highlight(null); return }
+      if (s.issues) showIssues()
+      else if (s.ticket) showTicket(byKey[s.ticket])
+      else showEdge(edges[s.edge])
+      drawer.classList.add('open')
+      highlight(s)
+    }
+    ui.select = select
+    // the redraw keeps what was selected, unless it left the map
+    select(ui.current)
+    if (!ui.fitted && tickets.length) { fit(); ui.fitted = true } else apply()
+  }
+
+  // ---- pan / zoom, set up once ----
+  var stage = document.getElementById('stage'), world = document.getElementById('world'), drawer = document.getElementById('drawer')
+  function apply() { world.style.transform = 'translate(' + ui.view.x + 'px,' + ui.view.y + 'px) scale(' + ui.view.k + ')' }
+  function fit() {
+    var r = stage.getBoundingClientRect()
+    if (!ui.W || !ui.H) return
+    ui.view.k = Math.min(1.1, (r.width - 40) / ui.W, (r.height - 20) / ui.H)
+    ui.view.x = (r.width - ui.W * ui.view.k) / 2; ui.view.y = 10; apply()
+  }
+  stage.addEventListener('wheel', function (ev) {
+    if (drawer.contains(ev.target)) return
+    ev.preventDefault()
+    var r = stage.getBoundingClientRect(), px = ev.clientX - r.left, py = ev.clientY - r.top, v = ui.view
+    var k = Math.min(2.5, Math.max(.25, v.k * Math.exp(-ev.deltaY * .0015)))
+    v.x = px - (px - v.x) * k / v.k; v.y = py - (py - v.y) * k / v.k; v.k = k; apply()
+  }, { passive: false })
+  var drag = null
+  stage.addEventListener('mousedown', function (ev) { if (drawer.contains(ev.target) || ev.target.closest('a,button')) return; drag = { x: ev.clientX, y: ev.clientY, vx: ui.view.x, vy: ui.view.y, moved: false }; stage.classList.add('drag') })
+  window.addEventListener('mousemove', function (ev) {
+    var cd = ui.cardDrag
+    if (cd) {
+      var bx = ev.clientX - cd.sx, by = ev.clientY - cd.sy
+      if (!cd.moved && Math.abs(bx) + Math.abs(by) <= 3) return
+      cd.moved = true
+      stage.classList.add('drag')
+      return cd.move(bx, by)
+    }
+    if (!drag) return; var dx = ev.clientX - drag.x, dy = ev.clientY - drag.y; if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true; ui.view.x = drag.vx + dx; ui.view.y = drag.vy + dy; apply()
+  })
+  window.addEventListener('mouseup', function () {
+    var cd = ui.cardDrag
+    ui.cardDrag = null
+    if (cd) {
+      stage.classList.remove('drag')
+      if (cd.moved) { ui.dragged = true; cd.end(); setTimeout(function () { ui.dragged = false }, 0) } // the click that follows is not a click
+      return
+    }
+    if (drag && !drag.moved) ui.select(null); drag = null; stage.classList.remove('drag')
+  })
+  stage.addEventListener('dblclick', function (ev) { if (!drawer.contains(ev.target)) fit() })
+  document.getElementById('dclose').addEventListener('click', function () { ui.select(null) })
+  document.addEventListener('keydown', function (ev) { if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA' || ev.target.tagName === 'SELECT') return; if (ev.key === 'Escape') ui.select(null); if (ev.key === '0') fit(); if (ev.key === 'r') ui.resetAll() })
+  window.addEventListener('resize', fit)
+
+  // ---- data.js, re-read every second; a change redraws ----
+  var last = ''
+  function load() {
+    var s = document.createElement('script')
+    s.src = 'data.js?t=' + Date.now()
+    s.onload = s.onerror = function () {
+      s.remove()
+      var plan = window.PLAN
+      var text = plan ? JSON.stringify(plan) : ''
+      var typing = document.activeElement && document.activeElement.tagName === 'TEXTAREA'
+      if (text && text !== last && !ui.cardDrag && !typing) { // a redraw waits for the box being dragged to land, and for the prompt being typed
+        last = text
+        document.title = (plan.title ? plan.title + ' · ' : '') + 'Plan Control'
+        try { render(plan) } catch (err) { note('Could not draw the map: ' + err.message) }
+      }
+      setTimeout(load, 1000)
+    }
+    document.head.appendChild(s)
+  }
+  load()
+})()
+</script>
+</body>
+</html>
