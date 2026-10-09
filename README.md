@@ -14,6 +14,8 @@ Changes from upstream `mission-control`:
 - The page (`hooks/template.ts`) is plain HTML and CSS fed by a small `data.js`, not a hand-built SVG. Text wraps by itself, so nothing is cut with `…`, and restyling means editing HTML/CSS.
 - The per-file "why" is asked from the model (haiku) only once `/mission` has opened the page, then once per change.
 - Nothing is written until `/mission` runs, and `/mission off` stops it. Writes are skipped when the data has not changed.
+- Kept from upstream: the one-line band above the prompt while Claude works.
+
 ### Install
 
 ```sh
@@ -30,6 +32,8 @@ Restart Claude Code (or run `/reload-plugins`), then:
 | `/mission off` | Stop updating the page. |
 
 In the page: `w` Who, `c` Code. The tab is kept in the URL hash (`#who`, `#code`).
+
+Closing the browser tab does not stop the updates, because the mod cannot see it close. Run `/mission off` when you are done, which also stops the model calls for the "why" lines.
 
 ### How it works
 
