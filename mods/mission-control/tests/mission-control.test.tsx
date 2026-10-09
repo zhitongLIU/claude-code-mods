@@ -11,6 +11,7 @@ const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: t
 // Stands for the engine beneath the mod.
 function engine(on: any, opts: { noChrome?: boolean } = {}) {
   const runs: string[][] = []
+  const models: number[] = []
   const writes: Record<string, string> = {}
   on('session.start', (_$: any, e: any) => ({ sessionId: 's', cwd: e.cwd }))
   on('command.register', () => ({ value: undefined }))
@@ -27,9 +28,9 @@ function engine(on: any, opts: { noChrome?: boolean } = {}) {
   on('process.run', (_$: any, e: any) => (runs.push(e.argv), { value: { exitCode: 0, stdout: '', stderr: '' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: [{ id: 'mission', title: 'Mission Control', isShown: true, isFocused: true, isPlaced: true }] }))
-  on('model.complete', () => ({ value: { isAnswered: true, text: '["tokens now expire after an hour"]', usage: { input_tokens: 1, output_tokens: 1 } } }))
+  on('model.complete', () => (models.push(1), { value: { isAnswered: true, text: '["tokens now expire after an hour"]', usage: { input_tokens: 1, output_tokens: 1 } } }))
   on('ui.render', ($: any, e: any) => $.ui.resolve(e).Text({ children: 'band below' }))
-  return { runs, writes, clock }
+  return { runs, writes, clock, models }
 }
 
 describe('mission-control', () => {
@@ -128,6 +129,23 @@ describe('mission-control', () => {
     expect(titleOf('/m/a/login.tsx', regs)).toBe('login.tsx')
     expect(wrapAll('Added userId validation before login', 20)).toEqual(['Added userId', 'validation before', 'login'])
     expect(wrapAll('short', 20)).toEqual(['short'])
+  })
+
+  test('the "why" is only asked for once the code map is on screen', async ($, on) => {
+    const { writes, clock, models } = engine(on)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/repo' } as any)
+    await $.turn.start({ text: 'fix the login bug', turnId: 't1' } as any)
+    await $.tool.call({ tool: 'Edit', file_path: '/repo/src/auth/session.ts', old_string: 'a', new_string: 'b' } as any)
+    await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1 } as any)
+    await clock.advance(800)
+    expect(models).toHaveLength(0) // nobody is looking: no model call
+    await $.command.run({ command: 'mission', args: 'code' } as any)
+    await clock.advance(1600)
+    expect(models).toHaveLength(1) // looking now: one batched call for what changed
+    expect(writes['/tmp/mission-control/map.svg'] ?? '').toContain('tokens now expire')
+    await $.command.run({ command: 'mission', args: 'code' } as any)
+    await clock.advance(1600)
+    expect(models).toHaveLength(1) // already explained: not asked twice
   })
 
   test('a turn fills the tree, the band sums it up, and /mission code draws the map', async ($, on) => {

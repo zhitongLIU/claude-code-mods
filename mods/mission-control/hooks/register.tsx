@@ -30,7 +30,10 @@ const now = atom({ plugin: 'mission', key: 'now' } as const, 0)
 
 // Drawing bookkeeping; a reload starts it over.
 const draw = { size: { columns: 100, rows: 30 }, pending: false, dirty: false, n: 0, error: '' }
-const changes = new Map<string, string[]>() // path → this turn's edits, for the one-line "why"
+// path → the edits of the turn that last changed it, kept until someone looks at the code map
+// and the one-line "why" is asked for (lazily: no model call while nobody watches).
+const pending = new Map<string, { turn: number; edits: string[] }>()
+const asking = new Set<string>() // paths a model call is already explaining
 
 // Under the cap, the oldest tool calls go first; main and the agents always stay.
 export function cap(list: MissionNode[]) {
@@ -65,7 +68,6 @@ export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     const t = (await read($, turn)) + 1
     await update($, turn, () => t)
-    changes.clear()
     const main: MissionNode = { id: 'main', parent: null, kind: 'main', label: `main · ${words(e.text, 50)}`, family: 'main', status: 'running', start: Date.now() }
     // A background agent still running from the last turn carries over, with its open calls.
     await update($, nodes, list => {
@@ -111,7 +113,9 @@ export const register: Register = on => {
     }
     if (path && !failed && (e.tool === 'Edit' || e.tool === 'Write')) {
       const what = e.tool === 'Edit' ? `- ${String(args.old_string ?? '').slice(0, 300)}\n+ ${String(args.new_string ?? '').slice(0, 300)}` : `wrote ${String(args.content ?? '').slice(0, 400)}`
-      changes.set(path, [...(changes.get(path) ?? []), what])
+      const t = await read($, turn)
+      const old = pending.get(path)
+      pending.set(path, { turn: t, edits: old?.turn === t ? [...old.edits, what] : [what] })
       await touch($, path, e.tool === 'Edit' ? 'edit' : 'write', true)
     }
     return r
@@ -129,10 +133,7 @@ export const register: Register = on => {
       const close = (n: MissionNode) => n.id === id || (isMain && n.kind === 'tool' && !live.has(n.parent ?? ''))
       return list.map(n => (close(n) && n.status === 'running' ? { ...n, status: failed ? 'failed' : 'done', end: Date.now() } : n))
     })
-    if (isMain) {
-      const t = await read($, turn)
-      void explain($, t, new Map(changes)).catch(() => {}) // in the background, so the turn ends at once
-    }
+    if (isMain && (await isWatching($))) void explainPending($).catch(() => {}) // in the background, so the turn ends at once
     return r
   })
 
@@ -141,6 +142,7 @@ export const register: Register = on => {
     if (arg === 'code' || arg === 'who') await update($, view, () => arg)
     await $.ui.open({ id: PANE, title: 'Mission Control', focus: true })
     void renderSoon($)
+    if (await isWatching($)) void explainPending($).catch(() => {})
     const s = summary(await read($, nodes))
     return { text: `Mission Control: ${s.agents} agents · ${s.tools} tool calls · ${(await read($, files)).length} files. w: who · c: code · q: close` }
   })
@@ -235,7 +237,14 @@ export const register: Register = on => {
 
 async function setCode($: EngineInterface) {
   await update($, view, () => 'code')
+  void explainPending($).catch(() => {}) // the map is now watched: explain what changed while it was not
   await renderSoon($)
+}
+
+// True while the code map is on screen: the only time a "why" is worth a model call.
+async function isWatching($: EngineInterface) {
+  if ((await read($, view)) !== 'code') return false
+  return (await $.ui.panes()).some(p => p.id === PANE && p.isPlaced)
 }
 
 // Notes a file Claude touched, with the relative imports it has.
@@ -253,32 +262,38 @@ async function touch($: EngineInterface, path: string, act: MapFile['act'], isCh
   $.clock.after(5500, () => void renderSoon($).catch(() => {})) // again once the glow has faded
 }
 
-// One plain line per changed file, from what changed this turn.
-async function explain($: EngineInterface, forTurn: number, edits: Map<string, string[]>) {
-  if (edits.size === 0) return
-  const paths = [...edits.keys()]
-  const plain = (t: string) => t.replace(/[<>"]/g, ' ')
-  const body = paths.map((p, i) => `<file n="${i + 1}" name="${plain(p.split('/').slice(-2).join('/'))}">\n${plain((edits.get(p) ?? []).join('\n').slice(0, 1500))}\n</file>`).join('\n')
-  const r = await $.model.complete({
-    model: 'haiku',
-    maxTokens: 400,
-    system: 'For each file, say in plain words what changed, at most 60 characters, no em dashes. Reply with a JSON array of strings only, one per file, in the same order.',
-    prompt: `${body}\n\nReply with the JSON array only: ${paths.length} strings.`,
-  })
-  if (!r.isAnswered) return
-  let whys: unknown
+// One plain line per changed file that has none yet, from what changed in its last turn.
+async function explainPending($: EngineInterface) {
+  const todo = [...pending].filter(([path]) => !asking.has(path))
+  if (todo.length === 0) return
+  const paths = todo.map(([path]) => path)
+  for (const path of paths) asking.add(path)
   try {
-    whys = JSON.parse(r.text.slice(r.text.indexOf('['), r.text.lastIndexOf(']') + 1))
-  } catch {
-    return
+    const plain = (t: string) => t.replace(/[<>"]/g, ' ')
+    const body = todo.map(([p, { edits }], i) => `<file n="${i + 1}" name="${plain(p.split('/').slice(-2).join('/'))}">\n${plain(edits.join('\n').slice(0, 1500))}\n</file>`).join('\n')
+    const r = await $.model.complete({
+      model: 'haiku',
+      maxTokens: 400,
+      system: 'For each file, say in plain words what changed, at most 60 characters, no em dashes. Reply with a JSON array of strings only, one per file, in the same order.',
+      prompt: `${body}\n\nReply with the JSON array only: ${paths.length} strings.`,
+    })
+    if (!r.isAnswered) return
+    let whys: unknown
+    try {
+      whys = JSON.parse(r.text.slice(r.text.indexOf('['), r.text.lastIndexOf(']') + 1))
+    } catch {
+      return
+    }
+    if (!Array.isArray(whys)) return
+    // By position, so nothing has to match a path the model may have rewritten.
+    const byPath = new Map(todo.map(([p, { turn: t }], i) => [p, { turn: t, why: typeof whys[i] === 'string' ? (whys[i] as string).replace(/\s*—\s*/g, ', ').slice(0, 80) : undefined }]))
+    // A file edited again since was queued anew under a later turn: this answer must not label it.
+    await update($, files, list => list.map(f => (byPath.get(f.path)?.why && f.changedTurn === byPath.get(f.path)?.turn ? { ...f, why: byPath.get(f.path)?.why } : f)))
+    for (const [path, { turn: t }] of todo) if (pending.get(path)?.turn === t && byPath.get(path)?.why) pending.delete(path)
+    await renderSoon($)
+  } finally {
+    for (const path of paths) asking.delete(path)
   }
-  if (!Array.isArray(whys)) return
-  // By position, so nothing has to match a path the model may have rewritten.
-  const byPath = new Map(paths.map((p, i) => [p, typeof whys[i] === 'string' ? (whys[i] as string).replace(/\s*—\s*/g, ', ').slice(0, 80) : undefined]))
-  // A slow answer from an earlier turn must not label this turn's changes.
-  if ((await read($, turn)) !== forTurn) return
-  await update($, files, list => list.map(f => (byPath.get(f.path) && f.changedTurn === forTurn ? { ...f, why: byPath.get(f.path) } : f)))
-  await renderSoon($)
 }
 
 // Draws the code map at most about once a second, only while someone looks at it.
@@ -287,9 +302,7 @@ async function renderSoon($: EngineInterface) {
     draw.dirty = true // drawing now: draw once more when it is done
     return
   }
-  if ((await read($, view)) !== 'code') return
-  const isUp = (await $.ui.panes()).some(p => p.id === PANE && p.isPlaced)
-  if (!isUp) return
+  if (!(await isWatching($))) return
   draw.pending = true
   draw.dirty = false
   $.clock.after(700, () => {
