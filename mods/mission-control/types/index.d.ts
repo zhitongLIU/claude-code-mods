@@ -17,6 +17,7 @@ export type MapFile = {
   at: number
   changedTurn: number // the turn number it last changed in, 0 if never
   imports: string[] // resolved import targets, extension stripped
+  names?: string[] // class and module names the file mentions, for languages that link by name
   why?: string
 }
 

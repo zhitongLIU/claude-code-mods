@@ -1,41 +1,31 @@
 // The "code" view: files Claude touched, the imports between them, handed to the HTML page as data.
 import type { MapFile } from '../types'
-
-const stripExt = (p: string) => p.replace(/\.(tsx?|jsx?|mjs|cjs|py|go|rs|rb|vue|svelte)$/, '').replace(/\/index$/, '')
-
-function join(dir: string, rel: string) {
-  const parts = dir.split('/')
-  for (const seg of rel.split('/')) {
-    if (seg === '..') parts.pop()
-    else if (seg !== '.') parts.push(seg)
-  }
-  return parts.join('/')
-}
+import { langFor, linksOf, stripExt } from './lang'
 
 // Relative imports in a source file, resolved against its folder, extension stripped.
 export function importsOf(path: string, text: string): string[] {
-  const dir = path.slice(0, path.lastIndexOf('/'))
-  const found = new Set<string>()
-  const js = /(?:from\s+|import\s*\(\s*|require\s*\(\s*|import\s+)['"](\.{1,2}\/[^'"]+)['"]/g
-  for (const m of text.matchAll(js)) found.add(stripExt(join(dir, m[1] as string)))
-  const py = /^\s*from\s+(\.+)([\w.]*)\s+import/gm
-  for (const m of text.matchAll(py)) {
-    const ups = (m[1] as string).length - 1
-    let base = dir
-    for (let i = 0; i < ups; i++) base = base.slice(0, base.lastIndexOf('/'))
-    if (m[2]) found.add(`${base}/${(m[2] as string).replace(/\./g, '/')}`)
-  }
-  return [...found]
+  return linksOf(path, text).imports
 }
 
 export type Edge = { from: string; to: string }
 
+// An arrow from each file to the files it imports, and to the files whose class or module
+// it mentions (per language, see lang.ts). Only files on the map can be linked.
 export function edges(files: MapFile[]): Edge[] {
   const byBase = new Map(files.map(f => [stripExt(f.path), f.path]))
+  const owners = new Map<string, string>() // "lang:Name" → the file that defines it
+  for (const f of files) {
+    const lang = langFor(f.path)
+    for (const name of lang?.defines(f.path) ?? []) owners.set(`${lang?.name}:${name}`, f.path)
+  }
   const out: Edge[] = []
-  for (const f of files) for (const target of f.imports) {
-    const to = byBase.get(target)
-    if (to && to !== f.path) out.push({ from: f.path, to })
+  const add = (from: string, to: string | undefined) => {
+    if (to && to !== from && !out.some(e => e.from === from && e.to === to)) out.push({ from, to })
+  }
+  for (const f of files) {
+    for (const target of f.imports) add(f.path, byBase.get(target))
+    const lang = langFor(f.path)
+    for (const name of f.names ?? []) add(f.path, owners.get(`${lang?.name}:${name}`))
   }
   return out
 }

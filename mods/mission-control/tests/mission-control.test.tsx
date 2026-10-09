@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
+import { linksOf } from '../hooks/lang'
 import { edges, importsOf, layout, mapData, titleOf } from '../hooks/map'
 import { label, lines, summary } from '../hooks/tree'
 import { cap } from '../hooks/register'
@@ -113,6 +114,33 @@ describe('mission-control', () => {
     const regs = ['/m/merge-gate/hooks/register.tsx', '/m/snake/hooks/register.tsx']
     expect(titleOf(regs[0] as string, regs)).toBe('merge-gate › register.tsx')
     expect(titleOf('/m/a/login.tsx', regs)).toBe('login.tsx')
+  })
+
+  test('ruby files link by the constants they mention and by require_relative', () => {
+    const rb = '/r/app/domains/orders/commands/request_chorus_otp.rb'
+    const links = linksOf('/r/app/controllers/orders_controller.rb', [
+      '# RequestChorusOtp in a comment does not count',
+      'class OrdersController',
+      '  def create = Orders::Commands::RequestChorusOtp.call(params)',
+      "  require_relative '../lib/helpers'",
+      'end',
+    ].join('\n'))
+    expect(links.names).toEqual(expect.arrayContaining(['OrdersController', 'Orders', 'Commands', 'RequestChorusOtp']))
+    expect(links.imports).toEqual(['/r/app/lib/helpers'])
+    const f = (path: string, names: string[] = [], imports: string[] = []) => ({ path, act: 'edit' as const, at: 0, changedTurn: 1, imports, names })
+    const files = [
+      f('/r/app/controllers/orders_controller.rb', links.names, links.imports),
+      f(rb, ['ChorusOtpRateLimit']),
+      f('/r/app/domains/concerns/chorus_otp_rate_limit.rb'),
+      f('/r/app/models/base.rb', ['Base']), // too common a name to link by
+      f('/r/app/models/user.rb', ['Base']),
+    ]
+    expect(edges(files)).toEqual([
+      { from: '/r/app/controllers/orders_controller.rb', to: rb },
+      { from: rb, to: '/r/app/domains/concerns/chorus_otp_rate_limit.rb' },
+    ])
+    // The adapter is picked by extension: a .ts file mentioning a Ruby-looking name links to nothing.
+    expect(edges([f('/r/a.ts', ['RequestChorusOtp']), f(rb)])).toEqual([])
   })
 
   test('the "why" is only asked for once the code map is on screen', async ($, on) => {

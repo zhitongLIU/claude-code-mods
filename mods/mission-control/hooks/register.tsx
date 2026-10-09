@@ -7,7 +7,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { MapFile, MissionNode } from '../types'
-import { importsOf, mapData } from './map'
+import { linksOf } from './lang'
+import { mapData } from './map'
 import { TEMPLATE } from './template'
 import { label, lines, summary } from './tree'
 
@@ -176,15 +177,15 @@ export const register: Register = on => {
   })
 }
 
-// Notes a file Claude touched, with the relative imports it has.
+// Notes a file Claude touched, with what it links to (imports and mentioned names, per language).
 async function touch($: EngineInterface, path: string, act: MapFile['act'], isChange: boolean) {
   if (!CODE_FILE.test(path)) return // an image, a PDF, a lockfile: not code to map
   const t = await read($, turn)
   const text = await $.fs.read(path).catch(() => '')
-  const imports = typeof text === 'string' ? importsOf(path, text.slice(0, 200_000)) : [] // imports sit near the top
+  const links = typeof text === 'string' ? linksOf(path, text.slice(0, 200_000)) : { imports: [], names: [] } // imports sit near the top
   await update($, files, list => {
     const old = list.find(f => f.path === path)
-    const next: MapFile = { path, act, at: Date.now(), changedTurn: isChange ? t : (old?.changedTurn ?? 0), imports: imports.length ? imports : (old?.imports ?? []), why: isChange ? undefined : old?.why }
+    const next: MapFile = { path, act, at: Date.now(), changedTurn: isChange ? t : (old?.changedTurn ?? 0), imports: links.imports.length ? links.imports : (old?.imports ?? []), names: links.names.length ? links.names : (old?.names ?? []), why: isChange ? undefined : old?.why }
     return [...list.filter(f => f.path !== path), next].sort((a, b) => b.at - a.at).slice(0, MAX_FILES)
   })
   await publish($)
