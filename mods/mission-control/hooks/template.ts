@@ -13,7 +13,8 @@ export const TEMPLATE = `<!doctype html>
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
     font: 14px -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif; }
   body { display: flex; flex-direction: column; background-image: radial-gradient(#1a1f28 1px, transparent 1px); background-size: 22px 22px; }
-  header { display: flex; align-items: center; gap: 8px; padding: 18px 24px 0; flex: none; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 18px 24px 0; flex: none; }
+  h1, .pill, .tab, .now, .hint { white-space: nowrap; }
   h1 { margin: 0 12px 0 0; font-size: 20px; }
   .tabs { display: flex; gap: 6px; margin-right: 12px; }
   .tab { padding: 4px 14px; border: 1px solid var(--line); border-radius: 8px; background: #161b24; color: var(--dim); font: inherit; font-size: 13px; cursor: pointer; }
@@ -28,7 +29,9 @@ export const TEMPLATE = `<!doctype html>
   .now { display: flex; align-items: center; gap: 7px; margin-left: 8px; font-size: 13px; }
   .now i, .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
   .empty { margin: auto; color: var(--dim); font-size: 16px; }
-  #stage { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+  #stage { flex: 1; min-height: 0; position: relative; overflow: hidden; cursor: grab; touch-action: none; user-select: none; }
+  #stage.drag { cursor: grabbing; }
+  .hint { margin-left: auto; font-size: 11.5px; color: var(--faint); }
   #graph { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
   #edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
   .cols { display: flex; gap: 64px; align-items: center; position: relative; }
@@ -55,6 +58,11 @@ export const TEMPLATE = `<!doctype html>
 <footer id="foot"></footer>
 <script src="data.js"></script>
 <script>
+  // The code map's view: fitted to the window until the person zooms or drags, then kept as they left it.
+  var view = { k: 1, x: 0, y: 0, auto: true };
+  function applyView() {
+    document.getElementById('graph').style.transform = 'translate(' + view.x + 'px,' + view.y + 'px) scale(' + view.k + ')';
+  }
   function tab() { return location.hash === '#code' ? 'code' : 'who'; }
   var SVGNS = 'http://www.w3.org/2000/svg';
   function h(tag, cls, text) {
@@ -78,6 +86,7 @@ export const TEMPLATE = `<!doctype html>
     head.appendChild(h('span', 'pill', S.agents + ' agents (' + S.running + ' running) \u00b7 ' + S.tools + ' tool calls' + (S.failed ? ' \u00b7 ' + S.failed + ' failed' : '')));
     head.appendChild(h('span', 'pill', M.files + ' files'));
     head.appendChild(h('span', 'pill' + (M.changed ? ' on' : ''), M.changed + ' changed'));
+    if (tab() === 'code') head.appendChild(h('span', 'hint', 'scroll to zoom \u00b7 drag to move \u00b7 double-click to fit'));
     if (M.now) {
       var now = h('span', 'now', M.now);
       now.style.color = M.nowState === 'read' ? 'var(--read)' : 'var(--edit)';
@@ -166,8 +175,36 @@ export const TEMPLATE = `<!doctype html>
       svg.appendChild(p);
     });
     var pad = 24, s = Math.min(1.5, (stage.clientWidth - 2 * pad) / gw, (stage.clientHeight - 2 * pad) / gh);
-    graph.style.transform = 'translate(' + (stage.clientWidth - gw * s) / 2 + 'px,' + (stage.clientHeight - gh * s) / 2 + 'px) scale(' + s + ')';
+    if (view.auto) view = { k: s, x: (stage.clientWidth - gw * s) / 2, y: (stage.clientHeight - gh * s) / 2, auto: true };
+    applyView();
   }
+
+  // Scroll or pinch to zoom around the pointer, drag to move, double-click (or 0) to fit again.
+  (function () {
+    var stage = document.getElementById('stage'), drag = null;
+    stage.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      var r = stage.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+      var k = Math.min(6, Math.max(0.15, view.k * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.002))));
+      view = { k: k, x: px - (px - view.x) * (k / view.k), y: py - (py - view.y) * (k / view.k), auto: false };
+      applyView();
+    }, { passive: false });
+    stage.addEventListener('pointerdown', function (e) {
+      drag = { x: e.clientX, y: e.clientY };
+      stage.setPointerCapture(e.pointerId);
+      stage.classList.add('drag');
+    });
+    stage.addEventListener('pointermove', function (e) {
+      if (!drag) return;
+      view = { k: view.k, x: view.x + e.clientX - drag.x, y: view.y + e.clientY - drag.y, auto: false };
+      drag = { x: e.clientX, y: e.clientY };
+      applyView();
+    });
+    function end() { drag = null; stage.classList.remove('drag'); }
+    stage.addEventListener('pointerup', end);
+    stage.addEventListener('pointercancel', end);
+    stage.addEventListener('dblclick', function () { view.auto = true; render(window.MAP); });
+  })();
 
   var last = JSON.stringify(window.MAP);
   render(window.MAP);
@@ -177,6 +214,7 @@ export const TEMPLATE = `<!doctype html>
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'w') { location.hash = 'who'; render(window.MAP); }
     if (e.key === 'c') { location.hash = 'code'; render(window.MAP); }
+    if (e.key === '0' || e.key === 'f') { view.auto = true; render(window.MAP); }
   });
   {
     setInterval(function () {

@@ -33,7 +33,7 @@ Restart Claude Code (or run `/reload-plugins`), then:
 | `/mission code` | Open the page on the Code tab. |
 | `/mission off` | Stop updating the page. |
 
-In the page: `w` Who, `c` Code. The tab is kept in the URL hash (`#who`, `#code`).
+In the page: `w` Who, `c` Code. On the code map, scroll or pinch to zoom around the pointer, drag to move, double-click (or `0`) to fit it to the window again. Your zoom is kept while the data refreshes. The tab is kept in the URL hash (`#who`, `#code`).
 
 Closing the browser tab does not stop the updates, because the mod cannot see it close. Run `/mission off` when you are done, which also stops the model calls for the "why" lines.
 
