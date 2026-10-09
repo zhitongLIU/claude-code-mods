@@ -15,6 +15,7 @@ Changes from upstream `mission-control`:
 - The per-file "why" is asked from the model (haiku) only once `/mission` has opened the page, then once per change.
 - Nothing is written until `/mission` runs, and `/mission off` stops it. Writes are skipped when the data has not changed.
 - Arrows come from per-language adapters (`hooks/lang.ts`): JS/TS and Python follow relative imports, Ruby follows `require_relative` and the class or module names a file mentions (`RequestChorusOtp` links to `request_chorus_otp.rb`), as Rails loads code by name. Add a language by adding an adapter.
+- Each session has its own page folder, so several Claude Code sessions can run `/mission` side by side without sharing data.
 - Kept from upstream: the one-line band above the prompt while Claude works.
 
 ### Install
@@ -40,7 +41,7 @@ Closing the browser tab does not stop the updates, because the mod cannot see it
 
 | File | Role |
 | --- | --- |
-| `hooks/register.tsx` | Tracks agents, tool calls and files. After `/mission`, writes `index.html` once and `data.js` on every change to `$TMPDIR/mission-control/`, and opens the page. |
+| `hooks/register.tsx` | Tracks agents, tool calls and files. After `/mission`, writes `index.html` once and `data.js` on every change to `$TMPDIR/mission-control/<session id>/`, and opens the page. |
 | `hooks/lang.ts` | Language adapters: what each file links to, and which names it defines. |
 | `hooks/map.ts` | `mapData()` turns the touched files into plain data: cards by link depth, edges, counts. |
 | `hooks/tree.ts` | The Who tree lines. |

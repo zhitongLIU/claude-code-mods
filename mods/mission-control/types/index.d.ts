@@ -27,6 +27,7 @@ declare module 'claude-code' {
       nodes: MissionNode[]
       files: MapFile[]
       turn: number
+      sid: string
     }
   }
 }

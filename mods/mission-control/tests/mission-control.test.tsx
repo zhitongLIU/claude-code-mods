@@ -68,7 +68,7 @@ describe('mission-control', () => {
     await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1 } as any) // main ends, ag1 runs on
     await $.command.run({ command: 'mission', args: '' } as any)
     await clock.advance(1600)
-    expect(writes['/tmp/mission-control/data.js']).toContain('"agents":1,"running":1') // still running
+    expect(writes['/tmp/mission-control/s/data.js']).toContain('"agents":1,"running":1') // still running
   })
 
   test('labels tool calls by family', () => {
@@ -154,7 +154,7 @@ describe('mission-control', () => {
     await $.command.run({ command: 'mission', args: 'code' } as any)
     await clock.advance(1600)
     expect(models).toHaveLength(1) // looking now: one batched call for what changed
-    expect(writes['/tmp/mission-control/data.js'] ?? '').toContain('tokens now expire')
+    expect(writes['/tmp/mission-control/s/data.js'] ?? '').toContain('tokens now expire')
     await $.command.run({ command: 'mission', args: 'code' } as any)
     await clock.advance(1600)
     expect(models).toHaveLength(1) // already explained: not asked twice
@@ -168,7 +168,7 @@ describe('mission-control', () => {
     await $.tool.call({ tool: 'Read', file_path: '/repo/src/pages/login.tsx' } as any)
     await $.tool.call({ tool: 'Edit', file_path: '/repo/src/auth/session.ts', old_string: 'a', new_string: 'b' } as any)
     await clock.advance(1600)
-    expect(writes['/tmp/mission-control/data.js']).toBeUndefined() // /mission has not opened the page: nothing is written
+    expect(writes['/tmp/mission-control/s/data.js']).toBeUndefined() // /mission has not opened the page: nothing is written
 
     const band = await $.ui.mount({ plugin: 'mission', surface: 'terminal', ...BAND } as any)
     expect(await band.find({ type: 'Text', text: /1\/1 agents · 2 tools · 1 files changed/ })).toBeDefined()
@@ -177,9 +177,9 @@ describe('mission-control', () => {
 
     const r = await $.command.run({ command: 'mission', args: 'code' } as any)
     expect(r.text).toMatch(/1 agents · 2 tool calls · 2 files/)
-    expect(runs.some(a => a[0] === 'cmux' && a.includes('open-split') && a.some(x => x.endsWith('/mission-control/index.html#code')))).toBe(true)
-    expect(writes['/tmp/mission-control/index.html']).toContain('Mission Control')
-    const first = JSON.parse((writes['/tmp/mission-control/data.js'] ?? '').replace(/^window\.MAP = /, '').replace(/;$/, ''))
+    expect(runs.some(a => a[0] === 'cmux' && a.includes('open-split') && a.some(x => x.endsWith('/mission-control/s/index.html#code')))).toBe(true)
+    expect(writes['/tmp/mission-control/s/index.html']).toContain('Mission Control')
+    const first = JSON.parse((writes['/tmp/mission-control/s/data.js'] ?? '').replace(/^window\.MAP = /, '').replace(/;$/, ''))
     expect(first.who.lines.map((l: any) => l.text)).toEqual(expect.arrayContaining([expect.stringMatching(/◆ main · fix the login bug/), expect.stringMatching(/● test login flow/), expect.stringMatching(/✎ edit: auth\/session\.ts/)]))
 
     // 2. Images are not code: a screenshot read now stays off the map.
@@ -188,7 +188,7 @@ describe('mission-control', () => {
     await $.tool.call({ tool: 'SubagentHandback', summary: 'done' } as any)
     await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1 } as any)
     await clock.advance(1600) // the data follows the work without anyone asking
-    const data = writes['/tmp/mission-control/data.js'] ?? ''
+    const data = writes['/tmp/mission-control/s/data.js'] ?? ''
     expect(data).toContain('login.tsx')
     expect(data).toContain('session.ts')
     expect(data).not.toContain('"id":"/repo/shots/v2.png"') // an image is not on the code map
@@ -202,10 +202,10 @@ describe('mission-control', () => {
     await $.command.run({ command: 'mission', args: '' } as any)
     expect(runs.some(a => a[0] === 'open' && String(a[1]).endsWith('/index.html#who'))).toBe(true)
     await $.command.run({ command: 'mission', args: 'off' } as any)
-    const before = writes['/tmp/mission-control/data.js']
+    const before = writes['/tmp/mission-control/s/data.js']
     await $.tool.call({ tool: 'Read', file_path: '/repo/src/zzz.ts' } as any)
     await clock.advance(1600)
-    expect(writes['/tmp/mission-control/data.js']).toBe(before)
+    expect(writes['/tmp/mission-control/s/data.js']).toBe(before)
     expect(summary([]).tools).toBe(0)
   })
 })

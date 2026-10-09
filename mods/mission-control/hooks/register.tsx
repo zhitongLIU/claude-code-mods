@@ -24,6 +24,7 @@ export const CODE_FILE = /\.(tsx?|jsx?|mjs|cjs|py|go|rs|rb|java|kt|swift|c|h|cc|
 const nodes = atom({ plugin: 'mission', key: 'nodes' } as const, [] as MissionNode[])
 const files = atom({ plugin: 'mission', key: 'files' } as const, [] as MapFile[])
 const turn = atom({ plugin: 'mission', key: 'turn' } as const, 0)
+const sid = atom({ plugin: 'mission', key: 'sid' } as const, '') // this session's folder name, so sessions never share a page
 
 // The web page's bookkeeping; a reload starts it over. `on` once /mission has opened the page.
 const page = { on: false, pending: false, dirty: false, last: '', written: false }
@@ -52,6 +53,7 @@ function words(text: string, max: number) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
+    await update($, sid, () => String((r as { sessionId?: string }).sessionId ?? Math.random().toString(36).slice(2, 10)).replace(/[^\w-]/g, ''))
     await $.command.register({ name: 'mission', description: 'Open the live web page of agents, tool calls and the code map; /mission off stops it', argumentHint: '[who|code|off]' }).catch(() => {})
     $.clock.every(1000, () => {
       void (async () => {
@@ -247,7 +249,7 @@ async function publish($: EngineInterface) {
 
 async function pageDir($: EngineInterface) {
   const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')
-  return `${tmp}/mission-control`
+  return `${tmp}/mission-control/${(await read($, sid)) || 'session'}`
 }
 
 // The page is one static file; data.js is all that changes.
