@@ -20,7 +20,7 @@ claude plugin marketplace add zhitongLIU/claude-code-mods
 claude plugin install mission@zhitong-mods
 ```
 
-Restart Claude Code, then:
+Restart Claude Code (or run `/reload-plugins`), then:
 
 | Command | What it does |
 | --- | --- |
@@ -29,6 +29,16 @@ Restart Claude Code, then:
 | `/mission:browser` | Open the code map in a browser tab that refreshes every second. |
 
 The terminal picture is a headless Google Chrome screenshot of that page (`/Applications/Google Chrome.app`) and only redraws while the Code view is open.
+
+### How the code map works
+
+| File | Role |
+| --- | --- |
+| `hooks/map.ts` | `mapData()` turns the touched files into plain data: cards by import depth, edges, counts. |
+| `hooks/template.ts` | The page: HTML, CSS and a little JS that lays out the cards and draws the arrows. Restyle it here. |
+| `hooks/register.tsx` | Writes `index.html` and `data.js` to `$TMPDIR/mission-control/`, and has headless Chrome screenshot the page for the terminal pane. |
+
+The page is opened with `?live` in the browser to re-read `data.js` every second, and without it for the one-off screenshot. The mod only writes while the Code view is open.
 
 ### Develop
 
