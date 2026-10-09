@@ -38,6 +38,8 @@ export const TEMPLATE = `<!doctype html>
   .col { display: flex; flex-direction: column; gap: 18px; width: max-content; max-width: 380px; min-width: 170px; }
   .card { position: relative; padding: 10px 16px 12px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--card);
     box-shadow: 0 4px 12px rgba(0,0,0,.45); }
+  .card { cursor: move; }
+  .card.moving { z-index: 5; box-shadow: 0 10px 26px rgba(0,0,0,.6); }
   .card.live { background: var(--card-live); border-width: 1.5px; }
   .card.read { border-color: var(--read); box-shadow: 0 0 22px rgba(90,169,255,.35); }
   .card.edit { border-color: var(--edit); box-shadow: 0 0 22px rgba(255,162,76,.35); }
@@ -63,6 +65,14 @@ export const TEMPLATE = `<!doctype html>
   function applyView() {
     document.getElementById('graph').style.transform = 'translate(' + view.x + 'px,' + view.y + 'px) scale(' + view.k + ')';
   }
+  // Where the person dragged each box (offsets from its laid-out place), kept per page and across reloads.
+  var POSKEY = 'mission-pos:' + location.pathname, pos = {}, dragging = false, stale = false, model = { cards: {}, edges: [] };
+  try { pos = JSON.parse(localStorage.getItem(POSKEY) || '{}') || {}; } catch (err) { pos = {}; }
+  function savePos() { try { localStorage.setItem(POSKEY, JSON.stringify(pos)); } catch (err) {} }
+  function place(el, id) {
+    var p = pos[id];
+    el.style.transform = p ? 'translate(' + p.dx + 'px,' + p.dy + 'px)' : '';
+  }
   function tab() { return location.hash === '#code' ? 'code' : 'who'; }
   var SVGNS = 'http://www.w3.org/2000/svg';
   function h(tag, cls, text) {
@@ -86,7 +96,7 @@ export const TEMPLATE = `<!doctype html>
     head.appendChild(h('span', 'pill', S.agents + ' agents (' + S.running + ' running) \u00b7 ' + S.tools + ' tool calls' + (S.failed ? ' \u00b7 ' + S.failed + ' failed' : '')));
     head.appendChild(h('span', 'pill', M.files + ' files'));
     head.appendChild(h('span', 'pill' + (M.changed ? ' on' : ''), M.changed + ' changed'));
-    if (tab() === 'code') head.appendChild(h('span', 'hint', 'scroll to zoom \u00b7 drag to move \u00b7 double-click to fit'));
+    if (tab() === 'code') head.appendChild(h('span', 'hint', 'scroll zooms \u00b7 drag the map or a box \u00b7 double-click: fit / reset box \u00b7 r: reset boxes'));
     if (M.now) {
       var now = h('span', 'now', M.now);
       now.style.color = M.nowState === 'read' ? 'var(--read)' : 'var(--edit)';
@@ -127,6 +137,8 @@ export const TEMPLATE = `<!doctype html>
         if (c.why) el.appendChild(h('div', 'why', c.why));
         colEl.appendChild(el);
         cards[c.id] = { el: el, col: ci };
+        place(el, c.id);
+        grab(el, c.id);
       });
       cols.appendChild(colEl);
     });
@@ -134,24 +146,35 @@ export const TEMPLATE = `<!doctype html>
     M.extra.forEach(function (t) { foot.appendChild(h('span', 'chip', t)); });
 
     // Measure at 1x, draw the arrows in the graph's own coordinates, then scale the whole graph to fit.
-    var graph = document.getElementById('graph'), stage = document.getElementById('stage'), svg = document.getElementById('edges');
+    var graph = document.getElementById('graph'), stage = document.getElementById('stage');
     graph.style.transform = '';
     var gw = graph.offsetWidth, gh = graph.offsetHeight;
+    model = { cards: cards, edges: M.edges };
+    drawEdges();
+    var pad = 24, s = Math.min(1.5, (stage.clientWidth - 2 * pad) / gw, (stage.clientHeight - 2 * pad) / gh);
+    if (view.auto) view = { k: s, x: (stage.clientWidth - gw * s) / 2, y: (stage.clientHeight - gh * s) / 2, auto: true };
+    applyView();
+  }
+
+  // The arrows, from where the boxes are now. Works at any zoom: positions are divided by the graph's scale.
+  function drawEdges() {
+    var graph = document.getElementById('graph'), svg = document.getElementById('edges');
+    var cards = model.cards, gw = graph.offsetWidth, gh = graph.offsetHeight;
     svg.setAttribute('width', gw); svg.setAttribute('height', gh);
     svg.textContent = '';
     var defs = document.createElementNS(SVGNS, 'defs');
     defs.innerHTML = '<marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,1L9,5L0,9z" fill="#6b7a96"/></marker>';
     svg.appendChild(defs);
-    var gr = graph.getBoundingClientRect();
+    var gr = graph.getBoundingClientRect(), k = gr.width / (gw || 1) || 1;
     function box(id) {
       var r = cards[id].el.getBoundingClientRect();
-      return { x: r.left - gr.left, y: r.top - gr.top, w: r.width, h: r.height, col: cards[id].col };
+      return { x: (r.left - gr.left) / k, y: (r.top - gr.top) / k, w: r.width / k, h: r.height / k, col: cards[id].col };
     }
-    M.edges.forEach(function (e) {
+    model.edges.forEach(function (e) {
       if (!cards[e.from] || !cards[e.to]) return;
       var a = box(e.from), b = box(e.to), d;
       var x1 = a.x + a.w, y1 = a.y + Math.min(a.h / 2, 26), x2 = b.x - 4, y2 = b.y + Math.min(b.h / 2, 26);
-      if (b.col - a.col > 1) {
+      if (b.col - a.col > 1 && x2 > x1 + 8 && !pos[e.from] && !pos[e.to]) {
         // Skips a column: arc over the cards between, so the arrow is never hidden behind one.
         var peak = a.y < b.y ? a.y : b.y;
         Object.keys(cards).forEach(function (id) {
@@ -174,9 +197,41 @@ export const TEMPLATE = `<!doctype html>
       p.setAttribute('marker-end', 'url(#a)');
       svg.appendChild(p);
     });
-    var pad = 24, s = Math.min(1.5, (stage.clientWidth - 2 * pad) / gw, (stage.clientHeight - 2 * pad) / gh);
-    if (view.auto) view = { k: s, x: (stage.clientWidth - gw * s) / 2, y: (stage.clientHeight - gh * s) / 2, auto: true };
-    applyView();
+  }
+
+  // Drag a box to move it, so tangled arrows can be pulled apart; double-click it to put it back.
+  function grab(el, id) {
+    el.addEventListener('pointerdown', function (e) {
+      e.stopPropagation(); // not the map's own drag
+      var from = { x: e.clientX, y: e.clientY }, base = pos[id] || { dx: 0, dy: 0 };
+      dragging = true;
+      el.classList.add('moving');
+      try { el.setPointerCapture(e.pointerId); } catch (err) {}
+      function move(ev) {
+        pos[id] = { dx: base.dx + (ev.clientX - from.x) / view.k, dy: base.dy + (ev.clientY - from.y) / view.k };
+        place(el, id);
+        drawEdges();
+      }
+      function end() {
+        el.removeEventListener('pointermove', move);
+        el.removeEventListener('pointerup', end);
+        el.removeEventListener('pointercancel', end);
+        el.classList.remove('moving');
+        dragging = false;
+        savePos();
+        if (stale) { stale = false; render(window.MAP); }
+      }
+      el.addEventListener('pointermove', move);
+      el.addEventListener('pointerup', end);
+      el.addEventListener('pointercancel', end);
+    });
+    el.addEventListener('dblclick', function (e) {
+      e.stopPropagation();
+      delete pos[id];
+      savePos();
+      place(el, id);
+      drawEdges();
+    });
   }
 
   // Scroll or pinch to zoom around the pointer, drag to move, double-click (or 0) to fit again.
@@ -215,6 +270,7 @@ export const TEMPLATE = `<!doctype html>
     if (e.key === 'w') { location.hash = 'who'; render(window.MAP); }
     if (e.key === 'c') { location.hash = 'code'; render(window.MAP); }
     if (e.key === '0' || e.key === 'f') { view.auto = true; render(window.MAP); }
+    if (e.key === 'r') { pos = {}; savePos(); render(window.MAP); }
   });
   {
     setInterval(function () {
@@ -222,7 +278,7 @@ export const TEMPLATE = `<!doctype html>
       s.src = 'data.js?t=' + Date.now();
       s.onload = function () {
         var now = JSON.stringify(window.MAP);
-        if (now !== last) { last = now; render(window.MAP); }
+        if (now !== last) { last = now; if (dragging) stale = true; else render(window.MAP); }
         s.remove();
       };
       s.onerror = function () { s.remove(); };
