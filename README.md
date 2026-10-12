@@ -29,14 +29,13 @@ Restart Claude Code (or run `/reload-plugins`), then:
 
 | Command | What it does |
 | --- | --- |
-| `/mission` | Open the page on the Who tab and keep it updated. |
-| `/mission code` | Open the page on the Code tab. |
-| `/mission-review [base]` | Put the files changed in git on the Code tab once (uncommitted changes, or everything against `base`, e.g. `main`), each with a one-line summary of its diff. Works with no turn running. After that the page carries on live from Claude's own work; run it again to refresh. `/mission review [base]` does the same. Give a GitHub PR link or `#123` instead of a base to review a pull request without checking it out: it is fetched from `origin` (needs `gh` signed in) and read from git. |
+| `/mission` | Open the page and keep it updated. It opens on the tab you used last (Who the first time). |
+| `/mission <base>` | Put the files changed in git on the Code tab once (`HEAD` for the uncommitted changes, or everything against `base`, e.g. `main`), each with a one-line summary of its diff. Works with no turn running. After that the page carries on live from Claude's own work; run it again to refresh. Give a GitHub PR link or `#123` instead of a base to review a pull request without checking it out: it is fetched from `origin` (needs `gh` signed in) and read from git. |
 | `/mission off` | Stop updating the page. |
 
-In the page: `w` Who, `c` Code. On the code map, scroll or pinch to zoom around the pointer, drag to move, double-click (or `0`) to fit it to the window again. Drag a box to pull it out of a tangle of arrows (the arrows follow); double-click a box to put it back, or press `r` to reset all boxes. Your zoom and box positions are kept while the data refreshes, and box positions are remembered in the browser for that session's page. The tab is kept in the URL hash (`#who`, `#code`).
+In the page: `w` Who, `c` Code. On the code map, scroll or pinch to zoom around the pointer, drag to move, double-click (or `0`) to fit it to the window again. Drag a box to pull it out of a tangle of arrows (the arrows follow); a moved box gets a small ↺ button, or double-click it, to put it back, and `r` resets all boxes. Your zoom and box positions are kept while the data refreshes, and box positions are remembered in the browser for that session's page. The tab is kept in the URL hash (`#who`, `#code`).
 
-Click a changed box to slide its diff up from the bottom (the map stays above it); click the box again, the empty map or press `esc` to close it. Press on a line number and drag to take a range of lines (or click one line, shift-click to extend), then **Add to review** or **Send now**. **Send review (n)** at the top copies every pending comment, each with its quoted lines, to the clipboard to paste into Claude; the pending review is kept in the browser for that session's page. Diffs come from git (against `HEAD`, the review base, or the pull request); a pull request given as a link uses GitHub's own patch, which GitHub leaves out for very large files.
+Click a changed box to slide its diff up from the bottom (the map stays above it); click the box again, the empty map or press `esc` to close it. Press on a line number and drag to take a range of lines (or click one line, shift-click to extend), then **Add to review** or **Send now**. **Send review (n)** at the top copies the comments not yet copied, each with its quoted lines, to the clipboard to paste into Claude. Copied comments stay on the page, dimmed with a ✓ (**Copy again** copies them all), and are cleared once Claude changes their file again; a comment you have not copied is never dropped, only marked outdated. **Send now** copies a single comment the same way. The review is kept in the browser for that session's page. Diffs come from git (against `HEAD`, the review base, or the pull request); a pull request given as a link uses GitHub's own patch, which GitHub leaves out for very large files.
 
 ![The code map with the diff drawer open and a comment being written](screen_shots/screen1.png)
 
@@ -46,11 +45,14 @@ Closing the browser tab does not stop the updates, because the mod cannot see it
 
 | File | Role |
 | --- | --- |
-| `hooks/register.tsx` | Tracks agents, tool calls and files. After `/mission`, writes `index.html` once and `data.js` on every change to `$TMPDIR/mission-control/<session id>/`, and opens the page. |
+| `hooks/register.tsx` | Tracks agents, tool calls and files. After `/mission`, writes `index.html` and `hljs.js` once, `data.js` on every change and `diffs.js` when a diff changes, to `$TMPDIR/mission-control/<session id>/`, and opens the page. |
 | `hooks/lang.ts` | Language adapters: what each file links to, and which names it defines. |
 | `hooks/map.ts` | `mapData()` turns the touched files into plain data: cards by link depth, edges, counts. |
 | `hooks/tree.ts` | The Who tree lines. |
 | `hooks/template.ts` | The page: tabs, the tree, the card layout and the arrows. Restyle it here. |
+| `hooks/diff.ts` | Parses a unified diff into numbered rows and formats review comments. Also runs in the page. |
+| `hooks/hl.ts`, `hooks/highlight.ts` | Syntax colours in the diff drawer: `hl.ts` feeds each hunk to highlight.js, `highlight.ts` is the small fallback tint. Both also run in the page. |
+| `hooks/vendor-hljs.ts` | [highlight.js](https://highlightjs.org) 11.11.1 (common languages), vendored unchanged for offline use. BSD-3-Clause, © 2006 Ivan Sagalaev. |
 
 ### Develop
 

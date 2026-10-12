@@ -6,9 +6,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { MapFile, MissionNode } from '../types'
+import type { MapFile, MissionNode, MissionWhere } from '../types'
 import { linksOf } from './lang'
 import { addedDiff } from './diff'
+import { HLJS } from './vendor-hljs'
 import { mapData } from './map'
 import { TEMPLATE } from './template'
 import { label, lines, summary } from './tree'
@@ -31,6 +32,7 @@ const nodes = atom({ plugin: 'mission', key: 'nodes' } as const, [] as MissionNo
 const files = atom({ plugin: 'mission', key: 'files' } as const, [] as MapFile[])
 const turn = atom({ plugin: 'mission', key: 'turn' } as const, 0)
 const diffs = atom({ plugin: 'mission', key: 'diffs' } as const, {} as Record<string, { text: string; ref?: string }>) // a changed file's diff, for the page's drawer
+const where = atom({ plugin: 'mission', key: 'where' } as const, { branch: '' } as MissionWhere) // the branch and pull request the page is about
 const sid = atom({ plugin: 'mission', key: 'sid' } as const, '') // this session's folder name, so sessions never share a page
 
 // The web page's bookkeeping; a reload starts it over. `on` once /mission has opened the page.
@@ -60,8 +62,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     await update($, sid, () => String((r as { sessionId?: string }).sessionId ?? Math.random().toString(36).slice(2, 10)).replace(/[^\w-]/g, ''))
-    await $.command.register({ name: 'mission', description: 'Open the live web page of agents, tool calls and the code map; /mission off stops it', argumentHint: '[who|code|review [base]|off]' }).catch(() => {})
-    await $.command.register({ name: 'mission-review', description: 'Open the code map of what changed in git (uncommitted, or against a base), then carry on live', argumentHint: '[base | PR link | #123]' }).catch(() => {})
+    await $.command.register({ name: 'mission', description: 'Open the live web page of agents, tool calls and the code map; give a base, PR link or #123 to put what changed on the map first; off stops it', argumentHint: '[base | PR link | #123 | off]' }).catch(() => {})
     $.clock.every(1000, () => {
       void (async () => {
         const busy = (await read($, nodes)).some(n => n.status === 'running')
@@ -147,7 +148,6 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'mission' }, async ($, e) => run($, e.args))
-  on('command.run', { command: 'mission-review' }, async ($, e) => run($, `review ${e.args}`))
 
   // The band: one summary line while Claude works, and for a short while after.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -173,25 +173,30 @@ export const register: Register = on => {
   })
 }
 
-// /mission [who|code|off] and /mission review [base]: opens the page, or stops it.
+// /mission [base | PR link | #123 | off]: opens the page (on the code map when it was given something to review),
+// or stops it. `HEAD` reviews the uncommitted changes.
 async function run($: EngineInterface, args: string) {
-  const [first = '', ...rest] = args.trim().split(/\s+/)
-  const arg = first.toLowerCase()
-  if (arg === 'off') {
+  const arg = args.trim()
+  if (arg.toLowerCase() === 'off') {
     page.on = false
     return { text: 'Mission Control: page stopped. /mission opens it again.' }
   }
   let note = ''
-  if (arg === 'review') {
-    const r = await review($, rest.join(' '))
+  let here: MissionWhere
+  if (arg) {
+    const r = await review($, arg)
     if ('error' in r) return { text: `Mission Control review: ${r.error}` }
     if (r.count === 0) return { text: `Mission Control review: no changed code files against ${r.ref}.` }
     note = `review: ${r.count} changed files against ${r.ref}. `
+    here = r.where
+  } else {
+    here = await liveWhere($)
   }
+  await update($, where, () => here)
   const s = summary(await read($, nodes))
   page.on = true
   await writePage($)
-  const opened = await openPage($, arg === 'code' || arg === 'review' ? 'code' : 'who')
+  const opened = await openPage($, arg ? 'code' : undefined)
   void explainPending($).catch(() => {}) // the map is watched now: explain what changed while it was not
   return { text: `Mission Control: ${note}${s.agents} agents · ${s.tools} tool calls · ${(await read($, files)).length} files. ${opened}` }
 }
@@ -221,11 +226,14 @@ export async function review($: EngineInterface, base: string) {
   let from = arg || 'HEAD'
   let to = '' // empty: the working tree
   let label = from
+  let here: MissionWhere | undefined // set for a pull request; a plain base is looked at from the branch we are on
   if (pr) {
-    const view = await $.process.run(['gh', 'pr', 'view', pr.number, '--json', 'baseRefName'], { timeoutMs: 30_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
+    const view = await $.process.run(['gh', 'pr', 'view', pr.number, '--json', 'baseRefName,headRefName,url'], { timeoutMs: 30_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
     let baseRef: unknown
+    let viewed: { baseRefName?: unknown; headRefName?: unknown; url?: unknown } = {}
     try {
-      baseRef = (JSON.parse(view.stdout) as { baseRefName?: unknown }).baseRefName
+      viewed = JSON.parse(view.stdout)
+      baseRef = viewed.baseRefName
     } catch {}
     if (view.exitCode !== 0 || typeof baseRef !== 'string' || !/^[\w./-]+$/.test(baseRef) || baseRef.startsWith('-')) return { error: `gh could not read pull request #${pr.number} (is gh signed in?).` }
     // Fetched without making a branch or touching the working tree; the commits are named by their ids.
@@ -236,6 +244,7 @@ export async function review($: EngineInterface, base: string) {
     from = (await git(['-C', root, 'merge-base', baseSha, to])).stdout.trim()
     if (!from || !to) return { error: `git could not find where pull request #${pr.number} branches off ${baseRef}.` }
     label = `PR #${pr.number} (${baseRef})`
+    here = { branch: typeof viewed.headRefName === 'string' ? viewed.headRefName : `PR #${pr.number}`, base: baseRef, pr: prOf(Number(pr.number), viewed.url) }
   }
 
   const range = to ? [from, to] : [from]
@@ -260,7 +269,31 @@ export async function review($: EngineInterface, base: string) {
       return { path, act: 'edit', at: Date.now() - 60_000, changedTurn: 0, review: true, imports: links.imports, names: links.names, edits: [body || `new file\n${text.slice(0, 400)}`], editsTurn: t } // a minute old: on the map as changed, not glowing as if Claude were editing it right now
     }),
   )
-  return { count: await place($, found, shown), ref: label }
+  return { count: await place($, found, shown), ref: label, where: here ?? { ...(await liveWhere($)), base: arg && arg !== 'HEAD' ? arg : undefined } }
+}
+
+// A pull request's number and link, when the link is one we would open.
+function prOf(number: number, url: unknown): MissionWhere['pr'] {
+  return typeof url === 'string' && /^https:\/\/\S+$/.test(url) ? { number, url } : undefined
+}
+
+// The branch we are on and its pull request, when there is one.
+async function liveWhere($: EngineInterface): Promise<MissionWhere> {
+  const git = async (argv: string[]) => $.process.run(['git', ...argv], { timeoutMs: 10_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
+  const b = await git(['rev-parse', '--abbrev-ref', 'HEAD'])
+  let branch = b.exitCode === 0 ? b.stdout.trim() : ''
+  if (branch === 'HEAD') {
+    const sha = await git(['rev-parse', '--short', 'HEAD'])
+    return { branch: sha.exitCode === 0 ? `detached at ${sha.stdout.trim()}` : '' } // no branch, so no pull request
+  }
+  if (!branch) return { branch: '' }
+  const view = await $.process.run(['gh', 'pr', 'view', '--json', 'number,url'], { timeoutMs: 15_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
+  let pr: MissionWhere['pr']
+  try {
+    const v = JSON.parse(view.stdout) as { number?: unknown; url?: unknown }
+    if (view.exitCode === 0 && typeof v.number === 'number') pr = prOf(v.number, v.url)
+  } catch {}
+  return { branch, pr }
 }
 
 // The files a review found go on the map, in front of what Claude touched; how many did.
@@ -274,8 +307,8 @@ async function place($: EngineInterface, found: (MapFile | undefined)[], shown: 
 // A pull request by its link, through GitHub alone: no clone, nothing fetched. The paths read /owner/repo/path.
 async function reviewRemote($: EngineInterface, repo: string, number: string) {
   const gh = async (argv: string[]) => $.process.run(['gh', ...argv], { timeoutMs: 30_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
-  const meta = await gh(['api', `repos/${repo}/pulls/${number}`, '--jq', '{sha: .head.sha, base: .base.ref}'])
-  let head: { sha?: unknown; base?: unknown } = {}
+  const meta = await gh(['api', `repos/${repo}/pulls/${number}`, '--jq', '{sha: .head.sha, base: .base.ref, head: .head.ref, url: .html_url}'])
+  let head: { sha?: unknown; base?: unknown; head?: unknown; url?: unknown } = {}
   try {
     head = JSON.parse(meta.stdout)
   } catch {}
@@ -305,7 +338,8 @@ async function reviewRemote($: EngineInterface, repo: string, number: string) {
       return { path, act: 'edit', at: Date.now() - 60_000, changedTurn: 0, review: true, imports: links.imports, names: links.names, edits: [body || `changed ${name}`], editsTurn: t }
     }),
   )
-  return { count: await place($, found, shown), ref: `PR #${number} (${head.base})` }
+  const here: MissionWhere = { branch: typeof head.head === 'string' ? head.head : `PR #${number}`, base: typeof head.base === 'string' ? head.base : undefined, pr: prOf(Number(number), head.url) }
+  return { count: await place($, found, shown), ref: `PR #${number} (${head.base})`, where: here }
 }
 
 // Notes a file Claude touched, with what it links to (imports and mentioned names, per language).
@@ -411,10 +445,12 @@ async function writePage($: EngineInterface) {
   const all = Object.fromEntries(Object.entries(await read($, diffs)).filter(([p]) => onMap.has(p)))
   const diffJson = JSON.stringify(all).replace(/</g, '\\u003c')
   const rev = [...diffJson].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) | 0, 7)
-  const json = JSON.stringify({ ...data, diffs: { rev, paths: Object.keys(all) } }).replace(/</g, '\\u003c')
+  const here = await read($, where)
+  const json = JSON.stringify({ ...data, where: here.branch ? here : undefined, diffs: { rev, paths: Object.keys(all) } }).replace(/</g, '\\u003c')
   if (json === page.last) return // nothing changed since the last write
   if (!page.written) {
     await $.fs.write(`${dir}/index.html`, TEMPLATE)
+    await $.fs.write(`${dir}/hljs.js`, HLJS) // highlight.js, for the diff drawer; the page copes without it
     page.written = true
   }
   if (diffJson !== page.lastDiffs) {
@@ -438,8 +474,9 @@ async function focusedWorkspace($: EngineInterface) {
 }
 
 // In a cmux split when this runs inside cmux, otherwise in the default browser.
-async function openPage($: EngineInterface, tab: 'who' | 'code') {
-  const url = `file://${encodeURI(await pageDir($))}/index.html#${tab}`
+// Without a tab the page opens on the one the person used last.
+async function openPage($: EngineInterface, tab?: 'code') {
+  const url = `file://${encodeURI(await pageDir($))}/index.html${tab ? `#${tab}` : ''}`
   const inCmux = Boolean(await $.env.get('CMUX_WORKSPACE_ID'))
   // cmux splits go to $CMUX_WORKSPACE_ID, fixed when Claude Code started: stale once the tab moved or the
   // session was resumed elsewhere. The workspace in focus is the one the person just typed /mission in.

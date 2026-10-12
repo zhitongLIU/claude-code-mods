@@ -24,6 +24,9 @@ export type MapFile = {
   review?: boolean // put on the map by /mission review: shown as changed until the next turn
 }
 
+// What the page is looking at: the branch, what it is compared with, and its pull request.
+export type MissionWhere = { branch: string; base?: string; pr?: { number: number; url: string } }
+
 declare module 'claude-code' {
   interface PluginState {
     mission: {
@@ -32,6 +35,7 @@ declare module 'claude-code' {
       turn: number
       sid: string
       diffs: Record<string, { text: string; ref?: string }>
+      where: MissionWhere
     }
   }
 }

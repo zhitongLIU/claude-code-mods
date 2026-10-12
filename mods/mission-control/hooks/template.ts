@@ -7,6 +7,7 @@
 // Keep this free of backticks, dollar-brace sequences and backslashes: it is one template literal.
 import { formatComment, formatReview, parseDiff } from './diff'
 import { highlight } from './highlight'
+import { htmlRows, langOf } from './hl'
 
 export const TEMPLATE = `<!doctype html>
 <meta charset="utf-8">
@@ -31,6 +32,8 @@ export const TEMPLATE = `<!doctype html>
   .none { color: var(--dim); font: 14px -apple-system, sans-serif; }
   .pill { padding: 3px 11px; border: 1px solid var(--line); border-radius: 12px; background: #161b24; font-size: 12.5px; color: var(--dim); }
   .pill.on { color: var(--changed); }
+  a.pill { color: #7fc4ff; text-decoration: none; }
+  a.pill:hover { background: #1c2433; }
   .now { display: flex; align-items: center; gap: 7px; margin-left: 8px; font-size: 13px; }
   .now i, .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
   .empty { margin: auto; color: var(--dim); font-size: 16px; }
@@ -63,6 +66,8 @@ export const TEMPLATE = `<!doctype html>
   footer b { font-weight: 400; font-size: 11.5px; color: var(--faint); margin-right: 4px; }
   .chip { padding: 3px 11px; border: 1px solid var(--line); border-radius: 12px; background: #141820; font-size: 12px; color: var(--dim); }
   .card.diffable:hover { border-color: #6b7a96; }
+  .reset { position: absolute; top: -8px; right: -8px; width: 20px; height: 20px; padding: 0; border: 1px solid #3a4a6a; border-radius: 50%; background: #26324a; color: var(--text); font-size: 12px; line-height: 1; cursor: pointer; opacity: .85; }
+  .reset:hover { opacity: 1; background: #3a4a6a; }
   .card.open { outline: 2px solid #5aa9ff; outline-offset: 2px; }
   .tab.go { background: #1d5fd1; border-color: #3b82f6; color: #fff; }
   #drawer { flex: none; height: 45vh; display: flex; flex-direction: column; border-top: 1px solid #3a4a6a; background: #10141b;
@@ -72,7 +77,8 @@ export const TEMPLATE = `<!doctype html>
   .dhead { flex: none; display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
   .dhead b { font-size: 14px; white-space: nowrap; }
   .dsub { font: 11.5px 'SF Mono', Menlo, monospace; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .dhint { margin-left: auto; font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+  .dcopy { margin-left: auto; padding: 2px 6px; border: 1px solid transparent; border-radius: 6px; background: none; font-size: 15px; line-height: 1; cursor: pointer; }
+  .dcopy:hover { background: #1c2433; border-color: var(--line); }
   .dclose { border: 0; background: none; color: var(--dim); font-size: 20px; line-height: 1; cursor: pointer; }
   .dbody { flex: 1; min-height: 0; overflow: auto; padding-bottom: 12px; }
   .dbody .none { padding: 18px 16px; }
@@ -84,10 +90,21 @@ export const TEMPLATE = `<!doctype html>
   .ln:hover { color: #fff; background: rgba(255,255,255,.08); }
   .mark { flex: none; width: 18px; color: var(--dim); user-select: none; }
   .code { flex: 1; padding-right: 24px; }
+  .hljs-keyword, .hljs-doctag, .hljs-template-tag, .hljs-selector-tag { color: #c792ea; }
+  .hljs-string, .hljs-regexp, .hljs-addition, .hljs-meta .hljs-string { color: #a5d6a7; }
+  .hljs-comment, .hljs-quote { color: #6b7a96; font-style: italic; }
+  .hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet { color: #f2a65a; }
+  .hljs-title, .hljs-title.function_, .hljs-section { color: #82aaff; }
+  .hljs-title.class_, .hljs-type, .hljs-built_in, .hljs-name, .hljs-tag { color: #7fc4ff; }
+  .hljs-attr, .hljs-attribute, .hljs-property, .hljs-variable, .hljs-template-variable, .hljs-selector-class, .hljs-selector-id { color: #e8c547; }
+  .hljs-params, .hljs-subst { color: var(--text); }
+  .hljs-meta, .hljs-link, .hljs-deletion { color: #ff8f8f; }
+  .hljs-emphasis { font-style: italic; } .hljs-strong { font-weight: 700; }
   .t-kw { color: #c792ea; } .t-str { color: #a5d6a7; } .t-com { color: #6b7a96; font-style: italic; } .t-num { color: #f2a65a; } .t-type { color: #7fc4ff; }
   .note, .editor { margin: 6px 16px 8px 68px; padding: 8px 12px; border: 1px solid #3a4a6a; border-radius: 8px; background: #171d29; font: 13px -apple-system, sans-serif; width: min(640px, calc(100% - 100px)); }
   .note { display: flex; gap: 10px; align-items: flex-start; white-space: pre-wrap; }
   .note span { flex: 1; overflow-wrap: anywhere; }
+  .note.sent { opacity: .6; }
   .note button { border: 0; background: none; color: var(--faint); cursor: pointer; }
   .editor textarea { display: block; width: 100%; min-height: 58px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #0d1015; color: var(--text); font: 13px -apple-system, sans-serif; resize: vertical; }
   .editor .btns { display: flex; gap: 8px; margin-top: 8px; }
@@ -98,6 +115,7 @@ export const TEMPLATE = `<!doctype html>
 <div id="stage"><div id="graph"><svg id="edges"></svg><div class="cols" id="cols"></div></div></div>
 <footer id="foot"></footer>
 <div id="drawer" hidden></div>
+<script src="hljs.js"></script>
 <script src="data.js"></script>
 <script>
   // Shared with the tests: the code in hooks/diff.ts, spliced in as it is.
@@ -105,6 +123,8 @@ export const TEMPLATE = `<!doctype html>
   ${formatComment}
   ${formatReview}
   ${highlight}
+  ${langOf}
+  ${htmlRows}
   // The code map's view: fitted to the window until the person zooms or drags, then kept as they left it.
   var view = { k: 1, x: 0, y: 0, auto: true };
   function applyView() {
@@ -118,7 +138,28 @@ export const TEMPLATE = `<!doctype html>
     var p = pos[id];
     el.style.transform = p ? 'translate(' + p.dx + 'px,' + p.dy + 'px)' : '';
   }
-  function tab() { return location.hash === '#code' ? 'code' : 'who'; }
+  // A box that has been moved carries a small button to put it back.
+  function putBack(el, id) {
+    var old = el.querySelector('.reset');
+    if (!pos[id]) { if (old) old.remove(); return; }
+    if (old) return;
+    var b = h('button', 'reset', '\u21ba');
+    b.title = 'Put this box back';
+    b.onpointerdown = function (e) { e.stopPropagation(); };
+    b.ondblclick = function (e) { e.stopPropagation(); };
+    b.onclick = function (e) {
+      e.stopPropagation();
+      delete pos[id]; savePos(); place(el, id); putBack(el, id); drawEdges();
+    };
+    el.appendChild(b);
+  }
+  var clickTimer = null; // a click on a changed box waits to see whether it is the first half of a double-click
+  // The tab in the hash, else the one used last on this page.
+  var TABKEY = 'mission-tab:' + location.pathname;
+  function tab() {
+    if (location.hash === '#code' || location.hash === '#who') return location.hash.slice(1);
+    try { return localStorage.getItem(TABKEY) === 'code' ? 'code' : 'who'; } catch (err) { return 'who'; }
+  }
   var SVGNS = 'http://www.w3.org/2000/svg';
   function h(tag, cls, text) {
     var el = document.createElement(tag);
@@ -137,16 +178,34 @@ export const TEMPLATE = `<!doctype html>
       tabs.appendChild(b);
     });
     head.appendChild(tabs);
+    if (M.where) {
+      head.appendChild(h('span', 'pill', '\u2387 ' + M.where.branch + (M.where.base ? ' \u2192 ' + M.where.base : '')));
+      if (M.where.pr && M.where.pr.url.indexOf('https://') === 0) {
+        var pl = h('a', 'pill', 'PR #' + M.where.pr.number + ' \u2197');
+        pl.href = M.where.pr.url; pl.target = '_blank'; pl.rel = 'noopener'; pl.title = M.where.pr.url;
+        head.appendChild(pl);
+      }
+    }
     var S = M.who.summary;
     head.appendChild(h('span', 'pill', S.agents + ' agents (' + S.running + ' running) \u00b7 ' + S.tools + ' tool calls' + (S.failed ? ' \u00b7 ' + S.failed + ' failed' : '')));
     head.appendChild(h('span', 'pill', M.files + ' files'));
     head.appendChild(h('span', 'pill' + (M.changed ? ' on' : ''), M.changed + ' changed'));
     if (pending.length) {
-      var send = h('button', 'tab go', 'Send review (' + pending.length + ')');
-      send.onclick = sendReview;
+      var fresh = pending.filter(function (c) { return !c.sent; }).length;
+      if (fresh) {
+        var send = h('button', 'tab go', 'Send review (' + fresh + ')');
+        send.onclick = sendReview;
+        head.appendChild(send);
+      }
+      if (fresh < pending.length) {
+        var all = h('button', 'tab', (fresh ? 'Copy all (' : 'Copy again (') + pending.length + ')');
+        all.title = 'Copy every comment on the page, the ones already copied too';
+        all.onclick = function () { copyAll(); };
+        head.appendChild(all);
+      }
       var drop = h('button', 'tab', 'Discard');
       drop.onclick = function () { pending = []; savePending(); render(window.MAP); renderDrawer(); };
-      head.appendChild(send); head.appendChild(drop);
+      head.appendChild(drop);
     }
     if (tab() === 'code') head.appendChild(h('span', 'hint', 'scroll zooms \u00b7 drag the map or a box \u00b7 click a changed box for its diff \u00b7 double-click: fit / reset box'));
     if (M.now) {
@@ -155,6 +214,7 @@ export const TEMPLATE = `<!doctype html>
       now.insertBefore(h('i'), now.firstChild);
       head.appendChild(now);
     }
+    try { localStorage.setItem(TABKEY, tab()); } catch (err) {}
     var whoEl = document.getElementById('who'), stageEl = document.getElementById('stage');
     whoEl.hidden = tab() !== 'who'; stageEl.hidden = tab() !== 'code'; foot.hidden = tab() !== 'code';
     document.getElementById('drawer').hidden = !openPath || tab() !== 'code';
@@ -196,6 +256,7 @@ export const TEMPLATE = `<!doctype html>
           cards[c.id] = { el: el, col: ci };
           n++;
           place(el, c.id);
+          putBack(el, c.id);
           grab(el, c.id, hasDiff(M, c.id));
         });
         inner.appendChild(colEl);
@@ -283,7 +344,12 @@ export const TEMPLATE = `<!doctype html>
         el.classList.remove('moving');
         dragging = false;
         savePos();
-        if (diffable && !moved && ev.type === 'pointerup') { toggleDrawer(id); return; }
+        if (moved) putBack(el, id);
+        if (diffable && !moved && ev.type === 'pointerup') {
+          if (clickTimer) clearTimeout(clickTimer);
+          clickTimer = setTimeout(function () { clickTimer = null; toggleDrawer(id); }, 250);
+          return;
+        }
         if (stale) { stale = false; render(window.MAP); }
       }
       el.addEventListener('pointermove', move);
@@ -292,9 +358,11 @@ export const TEMPLATE = `<!doctype html>
     });
     el.addEventListener('dblclick', function (e) {
       e.stopPropagation();
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; } // a double-click is not a click
       delete pos[id];
       savePos();
       place(el, id);
+      putBack(el, id);
       drawEdges();
     });
   }
@@ -367,13 +435,42 @@ export const TEMPLATE = `<!doctype html>
     var r = list.length ? list[0].ref : '';
     return list.every(function (c) { return c.ref === r; }) ? r : '';
   }
+  // Copying keeps the comments, marked as sent, so a paste that goes wrong costs nothing. They go when Claude
+  // changes their file again (sweep); a comment not copied yet is never dropped, only marked outdated.
   function sendReview() {
-    var list = pending.slice();
+    var list = pending.filter(function (c) { return !c.sent; });
     copyText(formatReview(list, refOf(list)), function () {
-      pending = []; savePending();
+      list.forEach(function (c) { c.sent = true; });
+      savePending();
       toast('Copied ' + list.length + ' comment' + (list.length === 1 ? '' : 's') + '. Paste them into Claude.');
       render(window.MAP); renderDrawer();
     });
+  }
+  function copyAll() {
+    var list = pending.slice();
+    copyText(formatReview(list, refOf(list)), function () {
+      list.forEach(function (c) { c.sent = true; });
+      savePending();
+      toast('Copied ' + list.length + ' comment' + (list.length === 1 ? '' : 's') + '. Paste them into Claude.');
+      render(window.MAP); renderDrawer();
+    });
+  }
+  // A fingerprint of a file's diff: it changes when the file does.
+  function fpOf(text) {
+    var x = 7;
+    for (var i = 0; i < text.length; i++) x = (Math.imul(x, 31) + text.charCodeAt(i)) | 0;
+    return x;
+  }
+  function changedSince(c) {
+    var d = diffOf(c.path);
+    return !!(d && c.fp !== undefined && fpOf(d.text) !== c.fp);
+  }
+  // Claude has worked on a file again: its comments that were already copied have been dealt with.
+  function sweep() {
+    var kept = pending.filter(function (c) { return !(c.sent && changedSince(c)); });
+    if (kept.length === pending.length) return;
+    pending = kept; savePending();
+    render(window.MAP); renderDrawer();
   }
   function picked() {
     if (!sel) return [];
@@ -383,14 +480,12 @@ export const TEMPLATE = `<!doctype html>
   function draft(send) {
     var text = draftText.trim(), lines = picked();
     if (!text || !lines.length) return;
-    var c = { id: Date.now() + '-' + Math.random(), path: openPath, ref: (diffOf(openPath) || {}).ref || '', lines: lines, text: text };
+    var d = diffOf(openPath) || {};
+    var c = { id: Date.now() + '-' + Math.random(), path: openPath, ref: d.ref || '', lines: lines, text: text, fp: fpOf(d.text || ''), sent: !!send };
     sel = null; draftText = '';
-    if (send) {
-      copyText(formatReview([c], c.ref), function () { toast('Copied. Paste it into Claude.'); renderDrawer(); });
-    } else {
-      pending.push(c); savePending();
-      render(window.MAP); renderDrawer();
-    }
+    pending.push(c); savePending();
+    render(window.MAP); renderDrawer();
+    if (send) copyText(formatReview([c], c.ref), function () { toast('Copied. Paste it into Claude.'); });
   }
   var rowsNow = [], selDrag = false;
   // The rows under the selection, lit as the mouse moves; the comment box comes once the button is let go.
@@ -412,8 +507,12 @@ export const TEMPLATE = `<!doctype html>
     if (el.hidden) return;
     var head = h('div', 'dhead');
     head.appendChild(h('b', '', openPath.split('/').slice(-2).join('/')));
-    head.appendChild(h('span', 'dsub', openPath));
-    head.appendChild(h('span', 'dhint', 'click or drag line numbers to comment \u00b7 shift-click extends \u00b7 esc closes'));
+    var sub = h('span', 'dsub', openPath);
+    sub.title = 'Click or drag line numbers to comment, shift-click extends, esc closes';
+    head.appendChild(sub);
+    var cp = h('button', 'dcopy', '\ud83d\udccb'); cp.title = 'Copy the file path';
+    cp.onclick = function () { copyText(openPath, function () { toast('Copied ' + openPath); }); };
+    head.appendChild(cp);
     var x = h('button', 'dclose', '\u00d7'); x.title = 'Close';
     x.onclick = closeDrawer;
     head.appendChild(x);
@@ -426,6 +525,8 @@ export const TEMPLATE = `<!doctype html>
     if (!rowsNow.length) { body.appendChild(h('div', 'none', 'No diff to show: the file is too large for GitHub to send, binary, or empty.')); return; }
     var lo = sel ? Math.min(sel.a, sel.b) : -1, hi = sel ? Math.max(sel.a, sel.b) : -1;
     var ext = openPath.indexOf('.') < 0 ? '' : openPath.split('.').pop();
+    // highlight.js when it loaded and knows the language; otherwise the small tint of highlight()
+    var lang = window.hljs ? langOf(ext) : '', htmls = lang && window.hljs.getLanguage(lang) ? htmlRows(rowsNow, lang, window.hljs) : [];
     var mine = pending.filter(function (c) { return c.path === openPath; }), placed = [];
     var anchor = {}; // row index -> the comments that end on it
     mine.forEach(function (c) {
@@ -454,12 +555,14 @@ export const TEMPLATE = `<!doctype html>
       });
       row.appendChild(h('span', 'mark', r.k === 'a' ? '+' : r.k === 'd' ? '-' : ' '));
       var code = h('span', 'code');
-      highlight(r.t, ext).forEach(function (t) { code.appendChild(t[0] ? h('span', 't-' + t[0], t[1]) : document.createTextNode(t[1])); });
+      if (htmls[i] !== undefined) code.innerHTML = htmls[i];
+      else highlight(r.t, ext).forEach(function (t) { code.appendChild(t[0] ? h('span', 't-' + t[0], t[1]) : document.createTextNode(t[1])); });
       row.appendChild(code);
       body.appendChild(row);
       (anchor[i] || []).forEach(function (c) {
-        var note = h('div', 'note');
-        note.appendChild(h('span', '', c.text));
+        var late = !c.sent && changedSince(c);
+        var note = h('div', 'note' + (c.sent ? ' sent' : ''));
+        note.appendChild(h('span', '', (c.sent ? '\u2713 ' : '') + c.text + (late ? '  (outdated: the file changed since)' : '')));
         var rm = h('button', '', '\u00d7'); rm.title = 'Remove this comment';
         rm.onclick = function () { pending = pending.filter(function (p) { return p.id !== c.id; }); savePending(); render(window.MAP); renderDrawer(); };
         note.appendChild(rm);
@@ -489,7 +592,7 @@ export const TEMPLATE = `<!doctype html>
     if (rev == null || rev === DIFFREV) return;
     var s = document.createElement('script');
     s.src = 'diffs.js?t=' + rev;
-    s.onload = function () { DIFFREV = rev; s.remove(); renderDrawer(); };
+    s.onload = function () { DIFFREV = rev; s.remove(); sweep(); renderDrawer(); };
     s.onerror = function () { s.remove(); };
     document.head.appendChild(s);
   }
