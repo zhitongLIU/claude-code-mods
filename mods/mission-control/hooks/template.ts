@@ -2,7 +2,12 @@
 // Two tabs, who (the agent and tool-call tree) and code (the file map), both drawn from
 // window.MAP in data.js (see writePage in register.tsx), which it re-reads every second.
 // Restyle it here; nothing else needs to change. The tab lives in the URL hash (#who, #code).
-// Keep this free of backticks and dollar-brace sequences: it is one template literal.
+// Clicking a changed box on the code map slides a diff drawer up from the bottom (diffs.js, see writePage):
+// pick lines, comment, and copy the review to paste into Claude.
+// Keep this free of backticks, dollar-brace sequences and backslashes: it is one template literal.
+import { formatComment, formatReview, parseDiff } from './diff'
+import { highlight } from './highlight'
+
 export const TEMPLATE = `<!doctype html>
 <meta charset="utf-8">
 <title>Mission Control</title>
@@ -57,13 +62,49 @@ export const TEMPLATE = `<!doctype html>
   footer:empty { display: none; }
   footer b { font-weight: 400; font-size: 11.5px; color: var(--faint); margin-right: 4px; }
   .chip { padding: 3px 11px; border: 1px solid var(--line); border-radius: 12px; background: #141820; font-size: 12px; color: var(--dim); }
+  .card.diffable:hover { border-color: #6b7a96; }
+  .card.open { outline: 2px solid #5aa9ff; outline-offset: 2px; }
+  .tab.go { background: #1d5fd1; border-color: #3b82f6; color: #fff; }
+  #drawer { flex: none; height: 45vh; display: flex; flex-direction: column; border-top: 1px solid #3a4a6a; background: #10141b;
+    box-shadow: 0 -12px 32px rgba(0,0,0,.55); animation: rise .18s ease-out; }
+  #drawer[hidden] { display: none; }
+  @keyframes rise { from { transform: translateY(48px); opacity: 0; } }
+  .dhead { flex: none; display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+  .dhead b { font-size: 14px; white-space: nowrap; }
+  .dsub { font: 11.5px 'SF Mono', Menlo, monospace; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dhint { margin-left: auto; font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+  .dclose { border: 0; background: none; color: var(--dim); font-size: 20px; line-height: 1; cursor: pointer; }
+  .dbody { flex: 1; min-height: 0; overflow: auto; padding-bottom: 12px; }
+  .dbody .none { padding: 18px 16px; }
+  .row { display: flex; width: max-content; min-width: 100%; font: 12.5px/19px 'SF Mono', Menlo, monospace; white-space: pre; }
+  .row.k-a { background: rgba(61,220,132,.12); } .row.k-d { background: rgba(255,107,107,.12); }
+  .row.hunk { color: var(--dim); background: #151b27; padding: 2px 16px; }
+  .row.sel { background: rgba(90,169,255,.25); }
+  .ln { flex: none; width: 50px; padding-right: 10px; text-align: right; color: var(--faint); cursor: pointer; user-select: none; }
+  .ln:hover { color: #fff; background: rgba(255,255,255,.08); }
+  .mark { flex: none; width: 18px; color: var(--dim); user-select: none; }
+  .code { flex: 1; padding-right: 24px; }
+  .t-kw { color: #c792ea; } .t-str { color: #a5d6a7; } .t-com { color: #6b7a96; font-style: italic; } .t-num { color: #f2a65a; } .t-type { color: #7fc4ff; }
+  .note, .editor { margin: 6px 16px 8px 68px; padding: 8px 12px; border: 1px solid #3a4a6a; border-radius: 8px; background: #171d29; font: 13px -apple-system, sans-serif; width: min(640px, calc(100% - 100px)); }
+  .note { display: flex; gap: 10px; align-items: flex-start; white-space: pre-wrap; }
+  .note span { flex: 1; overflow-wrap: anywhere; }
+  .note button { border: 0; background: none; color: var(--faint); cursor: pointer; }
+  .editor textarea { display: block; width: 100%; min-height: 58px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #0d1015; color: var(--text); font: 13px -apple-system, sans-serif; resize: vertical; }
+  .editor .btns { display: flex; gap: 8px; margin-top: 8px; }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); padding: 8px 16px; border-radius: 10px; background: #26324a; border: 1px solid #3a4a6a; font-size: 13px; z-index: 9; }
 </style>
 <header id="head"></header>
 <div id="who" hidden></div>
 <div id="stage"><div id="graph"><svg id="edges"></svg><div class="cols" id="cols"></div></div></div>
 <footer id="foot"></footer>
+<div id="drawer" hidden></div>
 <script src="data.js"></script>
 <script>
+  // Shared with the tests: the code in hooks/diff.ts, spliced in as it is.
+  ${parseDiff}
+  ${formatComment}
+  ${formatReview}
+  ${highlight}
   // The code map's view: fitted to the window until the person zooms or drags, then kept as they left it.
   var view = { k: 1, x: 0, y: 0, auto: true };
   function applyView() {
@@ -100,7 +141,14 @@ export const TEMPLATE = `<!doctype html>
     head.appendChild(h('span', 'pill', S.agents + ' agents (' + S.running + ' running) \u00b7 ' + S.tools + ' tool calls' + (S.failed ? ' \u00b7 ' + S.failed + ' failed' : '')));
     head.appendChild(h('span', 'pill', M.files + ' files'));
     head.appendChild(h('span', 'pill' + (M.changed ? ' on' : ''), M.changed + ' changed'));
-    if (tab() === 'code') head.appendChild(h('span', 'hint', 'scroll zooms \u00b7 drag the map or a box \u00b7 double-click: fit / reset box \u00b7 r: reset boxes'));
+    if (pending.length) {
+      var send = h('button', 'tab go', 'Send review (' + pending.length + ')');
+      send.onclick = sendReview;
+      var drop = h('button', 'tab', 'Discard');
+      drop.onclick = function () { pending = []; savePending(); render(window.MAP); renderDrawer(); };
+      head.appendChild(send); head.appendChild(drop);
+    }
+    if (tab() === 'code') head.appendChild(h('span', 'hint', 'scroll zooms \u00b7 drag the map or a box \u00b7 click a changed box for its diff \u00b7 double-click: fit / reset box'));
     if (M.now) {
       var now = h('span', 'now', M.now);
       now.style.color = M.nowState === 'read' ? 'var(--read)' : 'var(--edit)';
@@ -109,6 +157,7 @@ export const TEMPLATE = `<!doctype html>
     }
     var whoEl = document.getElementById('who'), stageEl = document.getElementById('stage');
     whoEl.hidden = tab() !== 'who'; stageEl.hidden = tab() !== 'code'; foot.hidden = tab() !== 'code';
+    document.getElementById('drawer').hidden = !openPath || tab() !== 'code';
     if (tab() === 'who') {
       whoEl.textContent = '';
       if (!M.who.lines.length) whoEl.appendChild(h('div', 'none', 'Nothing yet. Start a task and watch it fill in.'));
@@ -135,7 +184,8 @@ export const TEMPLATE = `<!doctype html>
       g.columns.forEach(function (col) {
         var colEl = h('div', 'col');
         col.forEach(function (c) {
-          var el = h('div', 'card' + (c.live ? ' live' : '') + (c.state ? ' ' + c.state : ''));
+          var el = h('div', 'card' + (c.live ? ' live' : '') + (c.state ? ' ' + c.state : '') + (hasDiff(M, c.id) ? ' diffable' : '') + (openPath === c.id ? ' open' : ''));
+          if (hasDiff(M, c.id)) el.title = 'Click for the diff';
           var name = h('div', 'name', c.title);
           var badge = c.live ? (c.state === 'edit' ? '\\u270e' : '\\u25cf') : c.state === 'changed' ? '\\u2713' : '';
           if (badge) name.appendChild(h('span', 'badge', badge));
@@ -146,7 +196,7 @@ export const TEMPLATE = `<!doctype html>
           cards[c.id] = { el: el, col: ci };
           n++;
           place(el, c.id);
-          grab(el, c.id);
+          grab(el, c.id, hasDiff(M, c.id));
         });
         inner.appendChild(colEl);
         ci++;
@@ -213,25 +263,27 @@ export const TEMPLATE = `<!doctype html>
   }
 
   // Drag a box to move it, so tangled arrows can be pulled apart; double-click it to put it back.
-  function grab(el, id) {
+  function grab(el, id, diffable) {
     el.addEventListener('pointerdown', function (e) {
       e.stopPropagation(); // not the map's own drag
-      var from = { x: e.clientX, y: e.clientY }, base = pos[id] || { dx: 0, dy: 0 };
+      var from = { x: e.clientX, y: e.clientY }, base = pos[id] || { dx: 0, dy: 0 }, moved = false;
       dragging = true;
       el.classList.add('moving');
       try { el.setPointerCapture(e.pointerId); } catch (err) {}
       function move(ev) {
+        if (Math.abs(ev.clientX - from.x) + Math.abs(ev.clientY - from.y) > 4) moved = true;
         pos[id] = { dx: base.dx + (ev.clientX - from.x) / view.k, dy: base.dy + (ev.clientY - from.y) / view.k };
         place(el, id);
         drawEdges();
       }
-      function end() {
+      function end(ev) {
         el.removeEventListener('pointermove', move);
         el.removeEventListener('pointerup', end);
         el.removeEventListener('pointercancel', end);
         el.classList.remove('moving');
         dragging = false;
         savePos();
+        if (diffable && !moved && ev.type === 'pointerup') { toggleDrawer(id); return; }
         if (stale) { stale = false; render(window.MAP); }
       }
       el.addEventListener('pointermove', move);
@@ -258,28 +310,202 @@ export const TEMPLATE = `<!doctype html>
       applyView();
     }, { passive: false });
     stage.addEventListener('pointerdown', function (e) {
-      drag = { x: e.clientX, y: e.clientY };
+      drag = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY };
       stage.setPointerCapture(e.pointerId);
       stage.classList.add('drag');
     });
     stage.addEventListener('pointermove', function (e) {
       if (!drag) return;
       view = { k: view.k, x: view.x + e.clientX - drag.x, y: view.y + e.clientY - drag.y, auto: false };
-      drag = { x: e.clientX, y: e.clientY };
+      drag = { x: e.clientX, y: e.clientY, sx: drag.sx, sy: drag.sy };
       applyView();
     });
-    function end() { drag = null; stage.classList.remove('drag'); }
+    function end(e) {
+      // A click on the bare map, not a drag, puts the drawer away.
+      var click = drag && e.type === 'pointerup' && Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) < 4;
+      drag = null; stage.classList.remove('drag');
+      if (click && openPath) closeDrawer();
+    }
     stage.addEventListener('pointerup', end);
     stage.addEventListener('pointercancel', end);
     stage.addEventListener('dblclick', function () { view.auto = true; render(window.MAP); });
   })();
 
+
+  // The diff drawer: the open file, the rows picked to comment on, the comment being written, and the review so far.
+  var openPath = null, sel = null, draftText = '', REVKEY = 'mission-review:' + location.pathname, pending = [], DIFFREV = null;
+  try { pending = JSON.parse(localStorage.getItem(REVKEY) || '[]') || []; } catch (err) { pending = []; }
+  function savePending() { try { localStorage.setItem(REVKEY, JSON.stringify(pending)); } catch (err) {} }
+  function hasDiff(M, id) { return !!(M.diffs && M.diffs.paths.indexOf(id) >= 0); }
+  function toggleDrawer(id) {
+    openPath = openPath === id ? null : id;
+    sel = null; draftText = '';
+    renderDrawer();
+    render(window.MAP); // the map makes room, or takes it back
+  }
+  function closeDrawer() { if (openPath) toggleDrawer(openPath); }
+  function toast(text) {
+    var t = h('div', 'toast', text);
+    document.body.appendChild(t);
+    setTimeout(function () { t.remove(); }, 2600);
+  }
+  // To the clipboard; where the browser refuses (a file page may), a box the person can copy from.
+  function copyText(text, done) {
+    function fallback() {
+      var ta = document.createElement('textarea'), ok = false;
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { ok = document.execCommand('copy'); } catch (err) {}
+      ta.remove();
+      if (!ok) window.prompt('Copy this review, then paste it into Claude:', text);
+      done();
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback);
+    else fallback();
+  }
+  function refOf(list) {
+    var r = list.length ? list[0].ref : '';
+    return list.every(function (c) { return c.ref === r; }) ? r : '';
+  }
+  function sendReview() {
+    var list = pending.slice();
+    copyText(formatReview(list, refOf(list)), function () {
+      pending = []; savePending();
+      toast('Copied ' + list.length + ' comment' + (list.length === 1 ? '' : 's') + '. Paste them into Claude.');
+      render(window.MAP); renderDrawer();
+    });
+  }
+  function picked() {
+    if (!sel) return [];
+    var lo = Math.min(sel.a, sel.b), hi = Math.max(sel.a, sel.b);
+    return rowsNow.slice(lo, hi + 1).filter(function (r) { return r.k !== 'h'; });
+  }
+  function draft(send) {
+    var text = draftText.trim(), lines = picked();
+    if (!text || !lines.length) return;
+    var c = { id: Date.now() + '-' + Math.random(), path: openPath, ref: (diffOf(openPath) || {}).ref || '', lines: lines, text: text };
+    sel = null; draftText = '';
+    if (send) {
+      copyText(formatReview([c], c.ref), function () { toast('Copied. Paste it into Claude.'); renderDrawer(); });
+    } else {
+      pending.push(c); savePending();
+      render(window.MAP); renderDrawer();
+    }
+  }
+  var rowsNow = [], selDrag = false;
+  // The rows under the selection, lit as the mouse moves; the comment box comes once the button is let go.
+  function paintSel() {
+    var lo = Math.min(sel.a, sel.b), hi = Math.max(sel.a, sel.b);
+    [].forEach.call(document.querySelectorAll('.dbody .row[data-i]'), function (r) {
+      var i = Number(r.getAttribute('data-i'));
+      r.classList.toggle('sel', i >= lo && i <= hi);
+    });
+  }
+  window.addEventListener('mouseup', function () { if (selDrag) { selDrag = false; renderDrawer(); } });
+  function diffOf(path) { return window.DIFFS && window.DIFFS[path]; }
+  function sameRow(a, b) { return a.k === b.k && a.o === b.o && a.n === b.n; }
+  function renderDrawer() {
+    var el = document.getElementById('drawer');
+    var keep = el.querySelector('.dbody'), top = keep ? keep.scrollTop : 0;
+    el.hidden = !openPath || tab() !== 'code';
+    el.textContent = '';
+    if (el.hidden) return;
+    var head = h('div', 'dhead');
+    head.appendChild(h('b', '', openPath.split('/').slice(-2).join('/')));
+    head.appendChild(h('span', 'dsub', openPath));
+    head.appendChild(h('span', 'dhint', 'click or drag line numbers to comment \u00b7 shift-click extends \u00b7 esc closes'));
+    var x = h('button', 'dclose', '\u00d7'); x.title = 'Close';
+    x.onclick = closeDrawer;
+    head.appendChild(x);
+    el.appendChild(head);
+    var body = h('div', 'dbody');
+    el.appendChild(body);
+    var d = diffOf(openPath);
+    rowsNow = d ? parseDiff(d.text) : [];
+    if (!d) { body.appendChild(h('div', 'none', 'Loading the diff\u2026')); return; }
+    if (!rowsNow.length) { body.appendChild(h('div', 'none', 'No diff to show: the file is too large for GitHub to send, binary, or empty.')); return; }
+    var lo = sel ? Math.min(sel.a, sel.b) : -1, hi = sel ? Math.max(sel.a, sel.b) : -1;
+    var ext = openPath.indexOf('.') < 0 ? '' : openPath.split('.').pop();
+    var mine = pending.filter(function (c) { return c.path === openPath; }), placed = [];
+    var anchor = {}; // row index -> the comments that end on it
+    mine.forEach(function (c) {
+      var last = c.lines[c.lines.length - 1], at = -1;
+      rowsNow.forEach(function (r, i) { if (r.k !== 'h' && sameRow(r, last)) at = i; });
+      if (at < 0) at = rowsNow.length - 1; // its lines moved on: it still shows, at the end
+      (anchor[at] = anchor[at] || []).push(c);
+    });
+    rowsNow.forEach(function (r, i) {
+      if (r.k === 'h') { body.appendChild(h('div', 'row hunk', r.t)); return; }
+      var row = h('div', 'row k-' + r.k + (i >= lo && i <= hi ? ' sel' : ''));
+      row.setAttribute('data-i', String(i));
+      row.onmouseenter = function () { if (selDrag) { sel = { a: sel.a, b: i }; paintSel(); } };
+      [r.o, r.n].forEach(function (num) {
+        var cell = h('span', 'ln', num == null ? '' : String(num));
+        // Press on a number and drag down or up to take a range; shift-click extends the one already taken.
+        cell.onmousedown = function (e) {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          if (e.shiftKey && sel) { sel = { a: sel.a, b: i }; renderDrawer(); return; }
+          sel = { a: i, b: i }; draftText = ''; selDrag = true;
+          var ed = document.querySelector('.editor'); if (ed) ed.remove();
+          paintSel();
+        };
+        row.appendChild(cell);
+      });
+      row.appendChild(h('span', 'mark', r.k === 'a' ? '+' : r.k === 'd' ? '-' : ' '));
+      var code = h('span', 'code');
+      highlight(r.t, ext).forEach(function (t) { code.appendChild(t[0] ? h('span', 't-' + t[0], t[1]) : document.createTextNode(t[1])); });
+      row.appendChild(code);
+      body.appendChild(row);
+      (anchor[i] || []).forEach(function (c) {
+        var note = h('div', 'note');
+        note.appendChild(h('span', '', c.text));
+        var rm = h('button', '', '\u00d7'); rm.title = 'Remove this comment';
+        rm.onclick = function () { pending = pending.filter(function (p) { return p.id !== c.id; }); savePending(); render(window.MAP); renderDrawer(); };
+        note.appendChild(rm);
+        body.appendChild(note);
+      });
+      if (i === hi) {
+        var ed = h('div', 'editor'), ta = document.createElement('textarea');
+        ta.placeholder = 'Comment on ' + (lo === hi ? 'this line' : 'these ' + picked().length + ' lines');
+        ta.value = draftText;
+        ta.oninput = function () { draftText = ta.value; };
+        ta.onkeydown = function (e) { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); draft(false); } };
+        ed.appendChild(ta);
+        var btns = h('div', 'btns');
+        [['Add to review', 'tab go', function () { draft(false); }], ['Send now', 'tab', function () { draft(true); }], ['Cancel', 'tab', function () { sel = null; draftText = ''; renderDrawer(); }]].forEach(function (b) {
+          var bt = h('button', b[1], b[0]); bt.onclick = b[2]; btns.appendChild(bt);
+        });
+        ed.appendChild(btns);
+        body.appendChild(ed);
+        setTimeout(function () { ta.focus(); }, 0);
+      }
+    });
+    body.scrollTop = top;
+  }
+  // diffs.js is read again only when data.js says its contents changed.
+  function syncDiffs() {
+    var rev = window.MAP && window.MAP.diffs && window.MAP.diffs.rev;
+    if (rev == null || rev === DIFFREV) return;
+    var s = document.createElement('script');
+    s.src = 'diffs.js?t=' + rev;
+    s.onload = function () { DIFFREV = rev; s.remove(); renderDrawer(); };
+    s.onerror = function () { s.remove(); };
+    document.head.appendChild(s);
+  }
+
   var last = JSON.stringify(window.MAP);
   render(window.MAP);
+  syncDiffs();
   window.addEventListener('resize', function () { render(window.MAP); });
   window.addEventListener('hashchange', function () { render(window.MAP); });
   window.addEventListener('keydown', function (e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.target && (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT')) {
+      if (e.key === 'Escape') { sel = null; draftText = ''; renderDrawer(); }
+      return;
+    }
+    if (e.key === 'Escape') closeDrawer();
     if (e.key === 'w') { location.hash = 'who'; render(window.MAP); }
     if (e.key === 'c') { location.hash = 'code'; render(window.MAP); }
     if (e.key === '0' || e.key === 'f') { view.auto = true; render(window.MAP); }
@@ -291,7 +517,7 @@ export const TEMPLATE = `<!doctype html>
       s.src = 'data.js?t=' + Date.now();
       s.onload = function () {
         var now = JSON.stringify(window.MAP);
-        if (now !== last) { last = now; if (dragging) stale = true; else render(window.MAP); }
+        if (now !== last) { last = now; syncDiffs(); if (dragging) stale = true; else render(window.MAP); }
         s.remove();
       };
       s.onerror = function () { s.remove(); };

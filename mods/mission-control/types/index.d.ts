@@ -31,6 +31,7 @@ declare module 'claude-code' {
       files: MapFile[]
       turn: number
       sid: string
+      diffs: Record<string, { text: string; ref?: string }>
     }
   }
 }

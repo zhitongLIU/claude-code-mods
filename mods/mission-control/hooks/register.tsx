@@ -8,12 +8,14 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { MapFile, MissionNode } from '../types'
 import { linksOf } from './lang'
+import { addedDiff } from './diff'
 import { mapData } from './map'
 import { TEMPLATE } from './template'
 import { label, lines, summary } from './tree'
 
 const MAX_NODES = 300
 const MAX_FILES = 14
+const DIFF_MAX = 200_000 // characters of one file's diff the page gets
 const REVIEW_MAX = 40 // a review of a branch shows more files than a live turn does
 const BAND_AFTER_MS = 30_000 // the band stays this long after a turn ends
 // Tools that are Claude Code's own bookkeeping, not work: kept out of the tree.
@@ -28,10 +30,11 @@ export const REVIEW_FILE = new RegExp(`${CODE_FILE.source}|(^|/)(\\.env[^/]*|Doc
 const nodes = atom({ plugin: 'mission', key: 'nodes' } as const, [] as MissionNode[])
 const files = atom({ plugin: 'mission', key: 'files' } as const, [] as MapFile[])
 const turn = atom({ plugin: 'mission', key: 'turn' } as const, 0)
+const diffs = atom({ plugin: 'mission', key: 'diffs' } as const, {} as Record<string, { text: string; ref?: string }>) // a changed file's diff, for the page's drawer
 const sid = atom({ plugin: 'mission', key: 'sid' } as const, '') // this session's folder name, so sessions never share a page
 
 // The web page's bookkeeping; a reload starts it over. `on` once /mission has opened the page.
-const page = { on: false, pending: false, dirty: false, last: '', written: false }
+const page = { on: false, pending: false, dirty: false, last: '', lastDiffs: '', written: false }
 // The edits awaiting their one-line "why" live on the files atom (MapFile.edits), so a reload keeps
 // them; the "why" is asked for lazily: no model call while nobody watches.
 const asking = new Set<string>() // paths a model call is already explaining
@@ -243,6 +246,7 @@ export async function review($: EngineInterface, base: string) {
   const untracked = fresh.exitCode === 0 ? fresh.stdout.split('\0').filter(Boolean) : []
   const paths = [...new Set([...tracked, ...untracked])].filter(p => REVIEW_FILE.test(p)).slice(0, REVIEW_MAX)
   const t = await read($, turn)
+  const shown = new Map<string, { text: string; ref?: string }>()
   const found = await Promise.all(
     paths.map(async (rel): Promise<MapFile | undefined> => {
       const path = `${root}/${rel}`
@@ -250,17 +254,19 @@ export async function review($: EngineInterface, base: string) {
       const text = to ? (await git(['-C', root, 'show', `${to}:${rel}`])).stdout : await $.fs.read(path).catch(() => undefined)
       if (typeof text !== 'string' || (to && text === '')) return undefined // deleted since, or in the PR: nothing to map
       const links = linksOf(path, text.slice(0, 200_000))
-      const d = tracked.includes(rel) ? await git(['-C', root, 'diff', '-U0', ...range, '--', rel]) : { exitCode: 0, stdout: '' }
+      const d = tracked.includes(rel) ? await git(['-C', root, 'diff', '-U3', ...range, '--', rel]) : { exitCode: 0, stdout: '' }
       const body = d.stdout.split('\n').filter(l => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l)).join('\n').slice(0, 1500)
+      shown.set(path, { text: (d.stdout || addedDiff(text)).slice(0, DIFF_MAX), ref: label })
       return { path, act: 'edit', at: Date.now() - 60_000, changedTurn: 0, review: true, imports: links.imports, names: links.names, edits: [body || `new file\n${text.slice(0, 400)}`], editsTurn: t } // a minute old: on the map as changed, not glowing as if Claude were editing it right now
     }),
   )
-  return { count: await place($, found), ref: label }
+  return { count: await place($, found, shown), ref: label }
 }
 
 // The files a review found go on the map, in front of what Claude touched; how many did.
-async function place($: EngineInterface, found: (MapFile | undefined)[]) {
+async function place($: EngineInterface, found: (MapFile | undefined)[], shown: Map<string, { text: string; ref?: string }>) {
   const list = found.filter((f): f is MapFile => f !== undefined)
+  await update($, diffs, old => ({ ...old, ...Object.fromEntries(list.flatMap(f => (shown.has(f.path) ? [[f.path, shown.get(f.path)]] : []))) }))
   await update($, files, old => [...list, ...old.filter(f => !f.review && !list.some(x => x.path === f.path))].slice(0, REVIEW_MAX))
   return list.length
 }
@@ -286,6 +292,8 @@ async function reviewRemote($: EngineInterface, repo: string, number: string) {
     }
   })
   const t = await read($, turn)
+  const ref = `PR #${number} (${head.base}) ${repo}@${sha.slice(0, 7)}`
+  const shown = new Map<string, { text: string; ref?: string }>()
   const found = await Promise.all(
     rows.slice(0, REVIEW_MAX).map(async ({ name, patch }): Promise<MapFile | undefined> => {
       const path = `/${repo}/${name}`
@@ -293,10 +301,11 @@ async function reviewRemote($: EngineInterface, repo: string, number: string) {
       const text = raw.exitCode === 0 ? raw.stdout : ''
       const links = linksOf(path, text.slice(0, 200_000))
       const body = patch.split('\n').filter(l => /^[+-]/.test(l)).join('\n').slice(0, 1500) // a patch has no file headers: only hunk and +/- lines
+      shown.set(path, { text: patch.slice(0, DIFF_MAX), ref }) // GitHub sends no patch for a very large or binary file: the drawer says so
       return { path, act: 'edit', at: Date.now() - 60_000, changedTurn: 0, review: true, imports: links.imports, names: links.names, edits: [body || `changed ${name}`], editsTurn: t }
     }),
   )
-  return { count: await place($, found), ref: `PR #${number} (${head.base})` }
+  return { count: await place($, found, shown), ref: `PR #${number} (${head.base})` }
 }
 
 // Notes a file Claude touched, with what it links to (imports and mentioned names, per language).
@@ -311,8 +320,23 @@ async function touch($: EngineInterface, path: string, act: MapFile['act'], isCh
     const next: MapFile = { path, act, at: Date.now(), changedTurn: isChange ? t : (old?.changedTurn ?? 0), imports: links.imports.length ? links.imports : (old?.imports ?? []), names: links.names.length ? links.names : (old?.names ?? []), why: isChange ? undefined : old?.why, edits, editsTurn: isChange && what ? t : old?.editsTurn }
     return [...list.filter(f => f.path !== path), next].sort((a, b) => b.at - a.at).slice(0, MAX_FILES)
   })
+  if (isChange) await liveDiff($, path, typeof text === 'string' ? text : '')
   await publish($)
   $.clock.after(5500, () => void publish($).catch(() => {})) // again once the glow has faded
+}
+
+// What a file Claude just changed looks like against HEAD, for the page's drawer. Nothing when git cannot say.
+async function liveDiff($: EngineInterface, path: string, text: string) {
+  const dir = path.slice(0, path.lastIndexOf('/')) || '/'
+  const git = async (argv: string[]) => $.process.run(['git', '-C', dir, ...argv], { timeoutMs: 10_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
+  const d = await git(['diff', 'HEAD', '--no-color', '-U3', '--', path])
+  if (d.exitCode !== 0) return
+  const known = d.stdout !== '' || (await git(['ls-files', '--error-unmatch', '--', path])).exitCode === 0
+  const body = d.stdout || (known ? '' : addedDiff(text)) // a new file git does not know yet reads as all added
+  await update($, diffs, old => {
+    const { [path]: _, ...rest } = old
+    return body ? { ...rest, [path]: { text: body.slice(0, DIFF_MAX) } } : rest
+  })
 }
 
 // One plain line per changed file that has none yet, from what changed in its last turn.
@@ -382,11 +406,20 @@ async function writePage($: EngineInterface) {
     ...mapData(await read($, files), { at, turn: await read($, turn) }),
     who: { summary: summary(list), lines: lines(list, at).map(l => ({ prefix: l.prefix, text: l.text, status: l.status, kind: l.node.kind })) },
   }
-  const json = JSON.stringify(data).replace(/</g, '\\u003c')
+  // The diffs of the files on the map. The page loads diffs.js when `rev` changes, so data.js stays small.
+  const onMap = new Set((await read($, files)).map(f => f.path))
+  const all = Object.fromEntries(Object.entries(await read($, diffs)).filter(([p]) => onMap.has(p)))
+  const diffJson = JSON.stringify(all).replace(/</g, '\\u003c')
+  const rev = [...diffJson].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) | 0, 7)
+  const json = JSON.stringify({ ...data, diffs: { rev, paths: Object.keys(all) } }).replace(/</g, '\\u003c')
   if (json === page.last) return // nothing changed since the last write
   if (!page.written) {
     await $.fs.write(`${dir}/index.html`, TEMPLATE)
     page.written = true
+  }
+  if (diffJson !== page.lastDiffs) {
+    await $.fs.write(`${dir}/diffs.js`, `window.DIFFS = ${diffJson};`) // before data.js, which tells the page it changed
+    page.lastDiffs = diffJson
   }
   await $.fs.write(`${dir}/data.js`, `window.MAP = ${json};`)
   page.last = json

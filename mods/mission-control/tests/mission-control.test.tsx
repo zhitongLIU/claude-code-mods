@@ -1,10 +1,13 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { categoryOf } from '../hooks/category'
+import { addedDiff, formatComment, formatReview, parseDiff } from '../hooks/diff'
+import { highlight } from '../hooks/highlight'
 import { linksOf } from '../hooks/lang'
 import { edges, importsOf, layout, mapData, titleOf } from '../hooks/map'
 import { label, lines, summary } from '../hooks/tree'
 import { cap, parsePr } from '../hooks/register'
+import { TEMPLATE } from '../hooks/template'
 
 let mockClock: any
 const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 120 } }
@@ -165,6 +168,34 @@ describe('mission-control', () => {
     expect(models).toHaveLength(1) // already explained: not asked twice
   })
 
+  test('a file Claude changes gets its diff against HEAD for the drawer, written apart from data.js', async ($, on) => {
+    const patch = '@@ -1 +1 @@\n-a\n+b\n'
+    const git = (argv: string[]) => {
+      const cmd = argv.slice(3).join(' ')
+      if (cmd === 'diff HEAD --no-color -U3 -- /repo/src/auth/session.ts') return patch
+      if (cmd.startsWith('diff HEAD')) return '' // nothing against HEAD for the rest
+      if (cmd.startsWith('ls-files --error-unmatch')) return undefined // git does not know it: new file
+      return undefined
+    }
+    const { writes, clock } = engine(on, { git })
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/repo' } as any)
+    await $.command.run({ command: 'mission', args: 'code' } as any)
+    await $.turn.start({ text: 'go', turnId: 't1' } as any)
+    await $.tool.call({ tool: 'Edit', file_path: '/repo/src/auth/session.ts', old_string: 'a', new_string: 'b' } as any)
+    await $.tool.call({ tool: 'Write', file_path: '/repo/src/pages/login.tsx', content: 'x' } as any) // new: the mock reads it as one import line
+    await $.tool.call({ tool: 'Read', file_path: '/repo/src/other.ts' } as any) // only read: no diff
+    await clock.advance(1600)
+    const shown = JSON.parse((writes['/tmp/mission-control/s/diffs.js'] ?? '').replace(/^window\.DIFFS = /, '').replace(/;$/, ''))
+    expect(Object.keys(shown).sort()).toEqual(['/repo/src/auth/session.ts', '/repo/src/pages/login.tsx'])
+    expect(shown['/repo/src/auth/session.ts'].text).toBe(patch)
+    expect(shown['/repo/src/pages/login.tsx'].text).toMatch(/^@@ -0,0 \+1,1 @@\n\+import /) // an untracked file reads as all added
+    const rev = (writes['/tmp/mission-control/s/data.js'] ?? '').match(/"rev":(-?\d+)/)?.[1]
+    expect(rev).toBeDefined()
+    await $.tool.call({ tool: 'Read', file_path: '/repo/src/zzz.ts' } as any)
+    await clock.advance(1600)
+    expect((writes['/tmp/mission-control/s/data.js'] ?? '').match(/"rev":(-?\d+)/)?.[1]).toBe(rev) // same diffs: the page is not told to reload them
+  })
+
   test('a turn fills the tree and the band; /mission opens the page and keeps its data fresh', async ($, on) => {
     const { runs, writes, clock, opts } = engine(on, { cmux: true, focus: JSON.stringify({ focused: { workspace_ref: 'workspace:13' } }) })
     await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/repo' } as any)
@@ -222,7 +253,7 @@ describe('mission-control', () => {
       if (cmd.startsWith('diff --name-only -z main')) return 'src/pages/login.tsx\0src/auth/session.ts\0shots/v2.png\0'
       if (cmd.startsWith('diff --name-only -z HEAD')) return 'src/pages/login.tsx\0'
       if (cmd.startsWith('ls-files')) return 'src/new.ts\0'
-      if (cmd.startsWith('diff -U0')) return '--- a/x\n+++ b/x\n-old\n+new\n'
+      if (cmd.startsWith('diff -U3')) return '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n'
       return undefined // an unknown base: git fails
     }
     const { runs, writes, clock, models } = engine(on, { git })
@@ -238,6 +269,11 @@ describe('mission-control', () => {
     expect(data).toContain('"from":"/repo/src/pages/login.tsx"') // imports linked as on the live map
     expect(data).toContain('tokens now expire after an hour') // the one-line summary of each diff
     expect(models).toHaveLength(1)
+    const shown = JSON.parse((writes['/tmp/mission-control/s/diffs.js'] ?? '').replace(/^window\.DIFFS = /, '').replace(/;$/, ''))
+    expect(shown['/repo/src/pages/login.tsx'].text).toContain('@@ -1 +1 @@') // the drawer's diff, whole
+    expect(shown['/repo/src/pages/login.tsx'].ref).toBe('main')
+    expect(shown['/repo/src/new.ts'].text).toBe('') // untracked, and the file reads empty: nothing to show
+    expect(JSON.parse(data.replace(/^window\.MAP = /, '').replace(/;$/, '')).diffs.paths).toContain('/repo/src/pages/login.tsx') // data.js only names who has one
 
     // /mission review reaches the same place; with no base it diffs HEAD.
     expect((await $.command.run({ command: 'mission', args: 'review' } as any)).text).toMatch(/against HEAD/)
@@ -275,6 +311,8 @@ describe('mission-control', () => {
     const data = writes['/tmp/mission-control/s/data.js'] ?? ''
     expect(data).toContain('"id":"/swile/app/src/pages/login.tsx"')
     expect(data).toContain('tokens now expire after an hour') // summarised from the patch
+    expect(writes['/tmp/mission-control/s/diffs.js']).toContain('@@ -1 +1 @@\\n-old\\n+new') // the patch itself reaches the drawer
+    expect(writes['/tmp/mission-control/s/diffs.js']).toContain('PR #7 (main) swile/app@aaaaaaa') // and says which pull request it is
     expect((await $.command.run({ command: 'mission-review', args: 'https://github.com/swile/app/pull/8' } as any)).text).toMatch(/could not read swile\/app pull request #8/)
     expect(parsePr('https://github.com/swile/app/pull/7/files')).toEqual({ repo: 'swile/app', number: '7' })
     expect(parsePr('#7')).toEqual({ repo: undefined, number: '7' })
@@ -293,7 +331,7 @@ describe('mission-control', () => {
       if (cmd === 'diff --name-only -z mbsha headsha --') return 'src/pages/login.tsx\0src/gone.ts\0'
       if (cmd === 'show headsha:src/pages/login.tsx') return "import { start } from '../auth/session'\n"
       if (cmd === 'show headsha:src/gone.ts') return ''
-      if (cmd.startsWith('diff -U0 mbsha headsha')) return '-old\n+new\n'
+      if (cmd.startsWith('diff -U3 mbsha headsha')) return '@@ -1 +1 @@\n-old\n+new\n'
       return undefined
     }
     const { runs, writes, clock } = engine(on, { git })
@@ -303,8 +341,54 @@ describe('mission-control', () => {
     expect(runs.some(a => a[0] === 'git' && a.includes('checkout'))).toBe(false) // the working tree is not touched
     await clock.advance(1600)
     expect(writes['/tmp/mission-control/s/data.js'] ?? '').toContain('"id":"/repo/src/pages/login.tsx"')
+    expect(writes['/tmp/mission-control/s/diffs.js']).toContain('@@ -1 +1 @@') // read from the fetched commits
     expect((await $.command.run({ command: 'mission-review', args: '#8' } as any)).text).toMatch(/gh could not read pull request #8/)
   })
+  test('a diff is parsed into numbered rows, and comments are quoted for the clipboard', () => {
+    const patch = ['diff --git a/x.ts b/x.ts', 'index 1..2 100644', '--- a/x.ts', '+++ b/x.ts', '@@ -3,4 +3,4 @@ fn', ' keep', '--- gone', '-old', '+new', '+extra', ' tail', '\\ No newline at end of file'].join('\n')
+    const rows = parseDiff(patch)
+    expect(rows.map(r => `${r.k}${r.o ?? ''}/${r.n ?? ''}:${r.t}`)).toEqual(['h/:@@ -3,4 +3,4 @@ fn', 'c3/3:keep', 'd4/:-- gone', 'd5/:old', 'a/4:new', 'a/5:extra', 'c6/6:tail'])
+    expect(parseDiff('@@ -1 +1 @@\n-a\n+b').map(r => r.k)).toEqual(['h', 'd', 'a']) // a GitHub patch has no file headers
+    expect(parseDiff('@@ -0,0 +1,2 @@\n+a\n+b\n@@ -9 +9 @@\n-c\n+d').map(r => r.n ?? r.o)).toEqual([undefined, 1, 2, undefined, 9, 9])
+    expect(parseDiff('')).toEqual([])
+    expect(addedDiff('a\nb\n')).toBe('@@ -0,0 +1,2 @@\n+a\n+b')
+    expect(parseDiff(addedDiff('a\nb\n')).filter(r => r.k === 'a').map(r => r.n)).toEqual([1, 2])
+    expect(addedDiff('')).toBe('')
+
+    const body = rows.filter(r => r.k !== 'h') // keep, gone, old, new, extra, tail
+    expect(formatComment('src/x.ts', body.slice(2, 4), 'why both?')).toBe('src/x.ts:L4\n> -old\n> +new\n\nwhy both?')
+    expect(formatComment('src/x.ts', body.slice(2, 5), 'rename')).toBe('src/x.ts:L4-5\n> -old\n> +new\n> +extra\n\nrename')
+    expect(formatComment('src/x.ts', body.slice(1, 3), 'drop')).toBe('src/x.ts:L4-5 (removed)\n> --- gone\n> -old\n\ndrop') // only old lines: their old numbers
+    expect(formatComment('src/x.ts', body.slice(1, 4), 'mixed')).toBe('src/x.ts:L4\n> --- gone\n> -old\n> +new\n\nmixed') // the new side's numbers win
+    const long = Array.from({ length: 15 }, (_, i) => ({ k: 'a' as const, n: i + 1, t: `l${i}` }))
+    expect(formatComment('f.ts', long, 'big')).toContain('> … 3 more lines')
+    expect(formatReview([{ path: 'a.ts', lines: body.slice(3, 4), text: 'one' }, { path: 'b.ts', lines: body.slice(4, 5), text: 'two' }], 'PR #9 (main)')).toBe(
+      'Code review comments on PR #9 (main) (2):\n\na.ts:L4\n> +new\n\none\n\n---\n\nb.ts:L5\n> +extra\n\ntwo',
+    )
+    expect(formatReview([{ path: 'a.ts', lines: long.slice(0, 1), text: 'x' }], '')).toMatch(/^Code review comments \(1\):/)
+  })
+
+  test('diff lines are tinted by what they are: keywords, strings, comments, numbers, types', () => {
+    const kinds = (text: string, ext: string) => highlight(text, ext).filter(([k]) => k).map(([k, t]) => `${k}:${t}`)
+    expect(kinds('export const TTL = 3600 // an hour', 'ts')).toEqual(['kw:export', 'kw:const', 'type:TTL', 'num:3600', 'com:// an hour'])
+    expect(kinds("import { Foo } from './x' + \"a // b\"", 'tsx')).toEqual(['kw:import', 'type:Foo', 'kw:from', "str:'./x'", 'str:"a // b"']) // a // inside a string is no comment
+    expect(kinds('  * @param x the thing', 'ts')).toEqual(['com:  * @param x the thing']) // inside a block comment
+    expect(kinds('def run # go', 'rb')).toEqual(['kw:def', 'com:# go'])
+    expect(kinds('SELECT 1 -- one', 'sql')).toEqual(['type:SELECT', 'num:1', 'com:-- one'])
+    expect(highlight('# Title', 'md')).toEqual([['', '# Title']]) // prose is left alone
+    expect(highlight('plain words', 'ts').map(([, t]) => t).join('')).toBe('plain words') // nothing is lost between pieces
+    expect(highlight('', 'ts')).toEqual([])
+  })
+
+  test('the page script carries the same diff code the tests check', () => {
+    const scripts = [...TEMPLATE.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1] as string)
+    expect(scripts).toHaveLength(1)
+    expect(scripts[0]).toContain(parseDiff.toString())
+    expect(scripts[0]).toContain(formatReview.toString())
+    expect(scripts[0]).toContain(highlight.toString())
+    expect(TEMPLATE).toContain('<div id="drawer" hidden>')
+  })
+
   test('files are framed by what they are for', () => {
     const kinds: Record<string, string> = {
       '/r/src/login.tsx': 'Source',
