@@ -21,6 +21,7 @@ export type MapFile = {
   why?: string
   edits?: string[] // what its last turn changed, kept until the one-line why is asked for
   editsTurn?: number // the turn those edits belong to
+  review?: boolean // put on the map by /mission review: shown as changed until the next turn
 }
 
 declare module 'claude-code' {

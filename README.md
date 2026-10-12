@@ -31,6 +31,7 @@ Restart Claude Code (or run `/reload-plugins`), then:
 | --- | --- |
 | `/mission` | Open the page on the Who tab and keep it updated. |
 | `/mission code` | Open the page on the Code tab. |
+| `/mission-review [base]` | Put the files changed in git on the Code tab once (uncommitted changes, or everything against `base`, e.g. `main`), each with a one-line summary of its diff. Works with no turn running. After that the page carries on live from Claude's own work; run it again to refresh. `/mission review [base]` does the same. Give a GitHub PR link or `#123` instead of a base to review a pull request without checking it out: it is fetched from `origin` (needs `gh` signed in) and read from git. |
 | `/mission off` | Stop updating the page. |
 
 In the page: `w` Who, `c` Code. On the code map, scroll or pinch to zoom around the pointer, drag to move, double-click (or `0`) to fit it to the window again. Drag a box to pull it out of a tangle of arrows (the arrows follow); double-click a box to put it back, or press `r` to reset all boxes. Your zoom and box positions are kept while the data refreshes, and box positions are remembered in the browser for that session's page. The tab is kept in the URL hash (`#who`, `#code`).

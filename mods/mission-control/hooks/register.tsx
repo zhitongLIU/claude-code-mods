@@ -14,11 +14,15 @@ import { label, lines, summary } from './tree'
 
 const MAX_NODES = 300
 const MAX_FILES = 14
+const REVIEW_MAX = 40 // a review of a branch shows more files than a live turn does
 const BAND_AFTER_MS = 30_000 // the band stays this long after a turn ends
 // Tools that are Claude Code's own bookkeeping, not work: kept out of the tree.
 const INTERNAL = new Set(['SubagentHandback', 'ToolSearch', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList'])
 // Files that belong on a code map: source, config and docs, not images or binaries.
 export const CODE_FILE = /\.(tsx?|jsx?|mjs|cjs|py|go|rs|rb|java|kt|swift|c|h|cc|cpp|hpp|cs|php|vue|svelte|css|scss|html|md|mdx|json|ya?ml|toml|sh|sql|lua|ex|exs)$/i
+
+// A review also maps what a change touches around the code: env files, Dockerfiles, translations, lockfiles, schemas.
+export const REVIEW_FILE = new RegExp(`${CODE_FILE.source}|(^|/)(\\.env[^/]*|Dockerfile[^/]*|Jenkinsfile|Gemfile(\\.lock)?|go\\.sum|yarn\\.lock|pnpm-lock\\.yaml|requirements[^/]*\\.txt)$|\\.(po|pot|xlf|xliff|ini|properties|tf|proto|graphql|gql|less|sass|lock)$`, 'i')
 
 // Held by the host, so a hot reload keeps the picture.
 const nodes = atom({ plugin: 'mission', key: 'nodes' } as const, [] as MissionNode[])
@@ -53,7 +57,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     await update($, sid, () => String((r as { sessionId?: string }).sessionId ?? Math.random().toString(36).slice(2, 10)).replace(/[^\w-]/g, ''))
-    await $.command.register({ name: 'mission', description: 'Open the live web page of agents, tool calls and the code map; /mission off stops it', argumentHint: '[who|code|off]' }).catch(() => {})
+    await $.command.register({ name: 'mission', description: 'Open the live web page of agents, tool calls and the code map; /mission off stops it', argumentHint: '[who|code|review [base]|off]' }).catch(() => {})
+    await $.command.register({ name: 'mission-review', description: 'Open the code map of what changed in git (uncommitted, or against a base), then carry on live', argumentHint: '[base | PR link | #123]' }).catch(() => {})
     $.clock.every(1000, () => {
       void (async () => {
         const busy = (await read($, nodes)).some(n => n.status === 'running')
@@ -68,6 +73,7 @@ export const register: Register = on => {
     await update($, turn, () => t)
     const main: MissionNode = { id: 'main', parent: null, kind: 'main', label: `main · ${words(e.text, 50)}`, family: 'main', status: 'running', start: Date.now() }
     // A background agent still running from the last turn carries over, with its open calls.
+    await update($, files, list => list.map(f => (f.review ? { ...f, review: undefined } : f))) // a review is a one-time snapshot: the live map takes over
     await update($, nodes, list => {
       const agents = list.filter(n => n.kind === 'agent' && n.status === 'running').map(a => ({ ...a, parent: 'main' }))
       const ids = new Set(agents.map(a => a.id))
@@ -137,19 +143,8 @@ export const register: Register = on => {
     return r
   })
 
-  on('command.run', { command: 'mission' }, async ($, e) => {
-    const arg = e.args.trim().toLowerCase()
-    const s = summary(await read($, nodes))
-    if (arg === 'off') {
-      page.on = false
-      return { text: 'Mission Control: page stopped. /mission opens it again.' }
-    }
-    page.on = true
-    await writePage($)
-    const opened = await openPage($, arg === 'code' ? 'code' : 'who')
-    void explainPending($).catch(() => {}) // the map is watched now: explain what changed while it was not
-    return { text: `Mission Control: ${s.agents} agents · ${s.tools} tool calls · ${(await read($, files)).length} files. ${opened}` }
-  })
+  on('command.run', { command: 'mission' }, async ($, e) => run($, e.args))
+  on('command.run', { command: 'mission-review' }, async ($, e) => run($, `review ${e.args}`))
 
   // The band: one summary line while Claude works, and for a short while after.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -173,6 +168,135 @@ export const register: Register = on => {
       </Box>
     )
   })
+}
+
+// /mission [who|code|off] and /mission review [base]: opens the page, or stops it.
+async function run($: EngineInterface, args: string) {
+  const [first = '', ...rest] = args.trim().split(/\s+/)
+  const arg = first.toLowerCase()
+  if (arg === 'off') {
+    page.on = false
+    return { text: 'Mission Control: page stopped. /mission opens it again.' }
+  }
+  let note = ''
+  if (arg === 'review') {
+    const r = await review($, rest.join(' '))
+    if ('error' in r) return { text: `Mission Control review: ${r.error}` }
+    if (r.count === 0) return { text: `Mission Control review: no changed code files against ${r.ref}.` }
+    note = `review: ${r.count} changed files against ${r.ref}. `
+  }
+  const s = summary(await read($, nodes))
+  page.on = true
+  await writePage($)
+  const opened = await openPage($, arg === 'code' || arg === 'review' ? 'code' : 'who')
+  void explainPending($).catch(() => {}) // the map is watched now: explain what changed while it was not
+  return { text: `Mission Control: ${note}${s.agents} agents · ${s.tools} tool calls · ${(await read($, files)).length} files. ${opened}` }
+}
+
+// A GitHub pull request named as a link or as #123: its number, and the repo when a link says which.
+export function parsePr(arg: string) {
+  const link = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)(?:[/?#].*)?$/.exec(arg)
+  if (link) return { repo: link[1] as string, number: link[2] as string }
+  const num = /^#(\d+)$/.exec(arg)
+  return num ? { repo: undefined, number: num[1] as string } : undefined
+}
+
+// Fills the code map from git once: the files changed against `base` (uncommitted changes when none), or the files of
+// a pull request given as a link or #123, with their diffs queued for the one-line "why". Nothing watches git
+// afterwards; the live map carries on from Claude's own edits.
+export async function review($: EngineInterface, base: string) {
+  const arg = base.trim()
+  if (/^-/.test(arg)) return { error: `"${arg}" is not a branch, a commit or a pull request.` }
+  const pr = parsePr(arg)
+  if (pr?.repo) return reviewRemote($, pr.repo, pr.number) // a link names its repo: no clone needed
+  const git = async (argv: string[]) => $.process.run(['git', ...argv], { timeoutMs: 60_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
+  const top = await git(['rev-parse', '--show-toplevel'])
+  if (top.exitCode !== 0) return { error: 'this is not a git repository.' }
+  const root = top.stdout.trim()
+
+  // What the diff runs between, where a file's text comes from, and what to call it.
+  let from = arg || 'HEAD'
+  let to = '' // empty: the working tree
+  let label = from
+  if (pr) {
+    const view = await $.process.run(['gh', 'pr', 'view', pr.number, '--json', 'baseRefName'], { timeoutMs: 30_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
+    let baseRef: unknown
+    try {
+      baseRef = (JSON.parse(view.stdout) as { baseRefName?: unknown }).baseRefName
+    } catch {}
+    if (view.exitCode !== 0 || typeof baseRef !== 'string' || !/^[\w./-]+$/.test(baseRef) || baseRef.startsWith('-')) return { error: `gh could not read pull request #${pr.number} (is gh signed in?).` }
+    // Fetched without making a branch or touching the working tree; the commits are named by their ids.
+    if ((await git(['-C', root, 'fetch', '--quiet', 'origin', `pull/${pr.number}/head`])).exitCode !== 0) return { error: `git could not fetch pull request #${pr.number} from origin.` }
+    to = (await git(['-C', root, 'rev-parse', 'FETCH_HEAD'])).stdout.trim()
+    if ((await git(['-C', root, 'fetch', '--quiet', 'origin', baseRef])).exitCode !== 0) return { error: `git could not fetch ${baseRef} from origin.` }
+    const baseSha = (await git(['-C', root, 'rev-parse', 'FETCH_HEAD'])).stdout.trim()
+    from = (await git(['-C', root, 'merge-base', baseSha, to])).stdout.trim()
+    if (!from || !to) return { error: `git could not find where pull request #${pr.number} branches off ${baseRef}.` }
+    label = `PR #${pr.number} (${baseRef})`
+  }
+
+  const range = to ? [from, to] : [from]
+  const changed = await git(['-C', root, 'diff', '--name-only', '-z', ...range, '--'])
+  if (changed.exitCode !== 0) return { error: `git could not diff against "${arg || from}".` }
+  const fresh = to ? { exitCode: 1, stdout: '' } : await git(['-C', root, 'ls-files', '--others', '--exclude-standard', '-z'])
+  const tracked = changed.stdout.split('\0').filter(Boolean)
+  const untracked = fresh.exitCode === 0 ? fresh.stdout.split('\0').filter(Boolean) : []
+  const paths = [...new Set([...tracked, ...untracked])].filter(p => REVIEW_FILE.test(p)).slice(0, REVIEW_MAX)
+  const t = await read($, turn)
+  const found = await Promise.all(
+    paths.map(async (rel): Promise<MapFile | undefined> => {
+      const path = `${root}/${rel}`
+      // A pull request's code is not on disk: read it from the fetched commit.
+      const text = to ? (await git(['-C', root, 'show', `${to}:${rel}`])).stdout : await $.fs.read(path).catch(() => undefined)
+      if (typeof text !== 'string' || (to && text === '')) return undefined // deleted since, or in the PR: nothing to map
+      const links = linksOf(path, text.slice(0, 200_000))
+      const d = tracked.includes(rel) ? await git(['-C', root, 'diff', '-U0', ...range, '--', rel]) : { exitCode: 0, stdout: '' }
+      const body = d.stdout.split('\n').filter(l => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l)).join('\n').slice(0, 1500)
+      return { path, act: 'edit', at: Date.now() - 60_000, changedTurn: 0, review: true, imports: links.imports, names: links.names, edits: [body || `new file\n${text.slice(0, 400)}`], editsTurn: t } // a minute old: on the map as changed, not glowing as if Claude were editing it right now
+    }),
+  )
+  return { count: await place($, found), ref: label }
+}
+
+// The files a review found go on the map, in front of what Claude touched; how many did.
+async function place($: EngineInterface, found: (MapFile | undefined)[]) {
+  const list = found.filter((f): f is MapFile => f !== undefined)
+  await update($, files, old => [...list, ...old.filter(f => !f.review && !list.some(x => x.path === f.path))].slice(0, REVIEW_MAX))
+  return list.length
+}
+
+// A pull request by its link, through GitHub alone: no clone, nothing fetched. The paths read /owner/repo/path.
+async function reviewRemote($: EngineInterface, repo: string, number: string) {
+  const gh = async (argv: string[]) => $.process.run(['gh', ...argv], { timeoutMs: 30_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
+  const meta = await gh(['api', `repos/${repo}/pulls/${number}`, '--jq', '{sha: .head.sha, base: .base.ref}'])
+  let head: { sha?: unknown; base?: unknown } = {}
+  try {
+    head = JSON.parse(meta.stdout)
+  } catch {}
+  if (meta.exitCode !== 0 || typeof head.sha !== 'string' || !/^[0-9a-f]{40}$/.test(head.sha)) return { error: `gh could not read ${repo} pull request #${number} (is gh signed in, and can it see that repo?).` }
+  const sha = head.sha
+  const listed = await gh(['api', `repos/${repo}/pulls/${number}/files?per_page=100`, '--jq', '.[] | {filename, status, patch}'])
+  if (listed.exitCode !== 0) return { error: `gh could not list the files of ${repo} pull request #${number}.` }
+  const rows = listed.stdout.split('\n').flatMap(line => {
+    try {
+      const f = JSON.parse(line) as { filename?: unknown; status?: unknown; patch?: unknown }
+      return typeof f.filename === 'string' && f.status !== 'removed' && REVIEW_FILE.test(f.filename) ? [{ name: f.filename, patch: typeof f.patch === 'string' ? f.patch : '' }] : []
+    } catch {
+      return []
+    }
+  })
+  const t = await read($, turn)
+  const found = await Promise.all(
+    rows.slice(0, REVIEW_MAX).map(async ({ name, patch }): Promise<MapFile | undefined> => {
+      const path = `/${repo}/${name}`
+      const raw = await gh(['api', '-H', 'Accept: application/vnd.github.raw', `repos/${repo}/contents/${name.split('/').map(encodeURIComponent).join('/')}?ref=${sha}`])
+      const text = raw.exitCode === 0 ? raw.stdout : ''
+      const links = linksOf(path, text.slice(0, 200_000))
+      const body = patch.split('\n').filter(l => /^[+-]/.test(l)).join('\n').slice(0, 1500) // a patch has no file headers: only hunk and +/- lines
+      return { path, act: 'edit', at: Date.now() - 60_000, changedTurn: 0, review: true, imports: links.imports, names: links.names, edits: [body || `changed ${name}`], editsTurn: t }
+    }),
+  )
+  return { count: await place($, found), ref: `PR #${number} (${head.base})` }
 }
 
 // Notes a file Claude touched, with what it links to (imports and mentioned names, per language).
@@ -268,11 +392,26 @@ async function writePage($: EngineInterface) {
   page.last = json
 }
 
+// The workspace cmux has in focus, or undefined when it cannot say (the split then goes where cmux would send it).
+async function focusedWorkspace($: EngineInterface) {
+  const r = await $.process.run(['cmux', 'identify'], { timeoutMs: 3_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
+  if (r.exitCode !== 0) return undefined
+  try {
+    const ref = (JSON.parse(r.stdout) as { focused?: { workspace_ref?: unknown } }).focused?.workspace_ref
+    return typeof ref === 'string' && /^[\w:-]+$/.test(ref) ? ref : undefined
+  } catch {
+    return undefined
+  }
+}
+
 // In a cmux split when this runs inside cmux, otherwise in the default browser.
 async function openPage($: EngineInterface, tab: 'who' | 'code') {
   const url = `file://${encodeURI(await pageDir($))}/index.html#${tab}`
   const inCmux = Boolean(await $.env.get('CMUX_WORKSPACE_ID'))
-  const argv = inCmux ? ['cmux', 'browser', 'open-split', url, '--focus', 'true'] : ['open', url]
+  // cmux splits go to $CMUX_WORKSPACE_ID, fixed when Claude Code started: stale once the tab moved or the
+  // session was resumed elsewhere. The workspace in focus is the one the person just typed /mission in.
+  const workspace = inCmux ? await focusedWorkspace($) : undefined
+  const argv = inCmux ? ['cmux', 'browser', 'open-split', url, '--focus', 'true', ...(workspace ? ['--workspace', workspace] : [])] : ['open', url]
   const r = await $.process.run(argv, { timeoutMs: 10_000 }).catch(() => ({ exitCode: 1 }))
   return r.exitCode === 0 ? `Opened ${url}` : `Could not open a browser. Open ${url} yourself.`
 }

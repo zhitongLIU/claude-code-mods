@@ -1,15 +1,16 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
+import { categoryOf } from '../hooks/category'
 import { linksOf } from '../hooks/lang'
 import { edges, importsOf, layout, mapData, titleOf } from '../hooks/map'
 import { label, lines, summary } from '../hooks/tree'
-import { cap } from '../hooks/register'
+import { cap, parsePr } from '../hooks/register'
 
 let mockClock: any
 const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 120 } }
 
 // Stands for the engine beneath the mod.
-function engine(on: any, opts: { cmux?: boolean } = {}) {
+function engine(on: any, opts: { cmux?: boolean; focus?: string; git?: (argv: string[]) => string | undefined } = {}) {
   const runs: string[][] = []
   const models: number[] = []
   const writes: Record<string, string> = {}
@@ -24,7 +25,11 @@ function engine(on: any, opts: { cmux?: boolean } = {}) {
   on('fs.read', (_$: any, e: any) => ({ value: e.path.endsWith('login.tsx') ? "import { start } from '../auth/session'\n" : '' }))
   on('fs.write', (_$: any, e: any) => ((writes[e.path] = e.text), { value: undefined }))
   on('env.get', (_$: any, e: any) => ({ value: e.name === 'CMUX_WORKSPACE_ID' ? (opts.cmux ? 'ws' : undefined) : '/tmp/' }))
-  on('process.run', (_$: any, e: any) => (runs.push(e.argv), { value: { exitCode: 0, stdout: '', stderr: '' } }))
+  on('process.run', (_$: any, e: any) => {
+    runs.push(e.argv)
+    const out = e.argv[0] === 'git' || e.argv[0] === 'gh' ? opts.git?.(e.argv) : e.argv[1] === 'identify' ? opts.focus : ''
+    return { value: { exitCode: out === undefined ? 1 : 0, stdout: out ?? '', stderr: '' } }
+  })
   on('model.complete', () => (models.push(1), { value: { isAnswered: true, text: '["tokens now expire after an hour"]', usage: { input_tokens: 1, output_tokens: 1 } } }))
   on('ui.render', ($: any, e: any) => $.ui.resolve(e).Text({ children: 'band below' }))
   return { runs, writes, clock, models, opts }
@@ -36,7 +41,7 @@ describe('mission-control', () => {
     const f = (path: string, imports: string[]) => ({ path, act: 'edit' as const, at: 0, changedTurn: 1, imports })
     const chain = [f('/r/a.ts', ['/r/b', '/r/c']), f('/r/b.ts', ['/r/c']), f('/r/c.ts', [])]
     const out = mapData(chain, { at: 99_999, turn: 1 })
-    expect(out.columns.map(col => col.map(c => c.title))).toEqual([['a.ts'], ['b.ts'], ['c.ts']])
+    expect(out.groups[0]?.columns.map(col => col.map(c => c.title))).toEqual([['a.ts'], ['b.ts'], ['c.ts']])
     expect(out.edges).toEqual([
       { from: '/r/a.ts', to: '/r/b.ts', hot: true },
       { from: '/r/a.ts', to: '/r/c.ts', hot: true },
@@ -110,7 +115,7 @@ describe('mission-control', () => {
     expect(layout(files, edges(files))).toEqual([['/r/a.ts'], ['/r/b.ts']])
     const out = mapData(files, { at: 99_999, turn: 2 })
     expect(out.changed).toBe(1)
-    expect(out.columns.flat().find(c => c.title === 'b.ts')).toMatchObject({ state: 'changed', why: 'adds a & b <check>' }) // text stays text: the page sets it with textContent
+    expect(out.groups.flatMap(g => g.columns.flat()).find(c => c.title === 'b.ts')).toMatchObject({ state: 'changed', why: 'adds a & b <check>' }) // text stays text: the page sets it with textContent
     const regs = ['/m/merge-gate/hooks/register.tsx', '/m/snake/hooks/register.tsx']
     expect(titleOf(regs[0] as string, regs)).toBe('merge-gate › register.tsx')
     expect(titleOf('/m/a/login.tsx', regs)).toBe('login.tsx')
@@ -161,7 +166,7 @@ describe('mission-control', () => {
   })
 
   test('a turn fills the tree and the band; /mission opens the page and keeps its data fresh', async ($, on) => {
-    const { runs, writes, clock, opts } = engine(on, { cmux: true })
+    const { runs, writes, clock, opts } = engine(on, { cmux: true, focus: JSON.stringify({ focused: { workspace_ref: 'workspace:13' } }) })
     await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/repo' } as any)
     await $.turn.start({ text: 'fix the login bug', turnId: 't1' } as any)
     await $.agent.spawn({ prompt: 'check it', description: 'test login flow' } as any)
@@ -178,6 +183,7 @@ describe('mission-control', () => {
     const r = await $.command.run({ command: 'mission', args: 'code' } as any)
     expect(r.text).toMatch(/1 agents · 2 tool calls · 2 files/)
     expect(runs.some(a => a[0] === 'cmux' && a.includes('open-split') && a.some(x => x.endsWith('/mission-control/s/index.html#code')))).toBe(true)
+    expect(runs.some(a => a[0] === 'cmux' && a.join(' ').includes('--workspace workspace:13'))).toBe(true) // the workspace in focus, not the one in the stale env
     expect(writes['/tmp/mission-control/s/index.html']).toContain('Mission Control')
     const first = JSON.parse((writes['/tmp/mission-control/s/data.js'] ?? '').replace(/^window\.MAP = /, '').replace(/;$/, ''))
     expect(first.who.lines.map((l: any) => l.text)).toEqual(expect.arrayContaining([expect.stringMatching(/◆ main · fix the login bug/), expect.stringMatching(/● test login flow/), expect.stringMatching(/✎ edit: auth\/session\.ts/)]))
@@ -201,11 +207,135 @@ describe('mission-control', () => {
     runs.length = 0
     await $.command.run({ command: 'mission', args: '' } as any)
     expect(runs.some(a => a[0] === 'open' && String(a[1]).endsWith('/index.html#who'))).toBe(true)
+    expect(runs.some(a => a[0] === 'cmux')).toBe(false) // outside cmux nothing of cmux is touched
     await $.command.run({ command: 'mission', args: 'off' } as any)
     const before = writes['/tmp/mission-control/s/data.js']
     await $.tool.call({ tool: 'Read', file_path: '/repo/src/zzz.ts' } as any)
     await clock.advance(1600)
     expect(writes['/tmp/mission-control/s/data.js']).toBe(before)
     expect(summary([]).tools).toBe(0)
+  })
+  test('/mission-review fills the code map from git once, then the live map carries on', async ($, on) => {
+    const git = (argv: string[]) => {
+      const cmd = argv.slice(argv[1] === '-C' ? 3 : 1).join(' ')
+      if (cmd === 'rev-parse --show-toplevel') return '/repo\n'
+      if (cmd.startsWith('diff --name-only -z main')) return 'src/pages/login.tsx\0src/auth/session.ts\0shots/v2.png\0'
+      if (cmd.startsWith('diff --name-only -z HEAD')) return 'src/pages/login.tsx\0'
+      if (cmd.startsWith('ls-files')) return 'src/new.ts\0'
+      if (cmd.startsWith('diff -U0')) return '--- a/x\n+++ b/x\n-old\n+new\n'
+      return undefined // an unknown base: git fails
+    }
+    const { runs, writes, clock, models } = engine(on, { git })
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/repo' } as any)
+    const r = await $.command.run({ command: 'mission-review', args: 'main' } as any)
+    expect(r.text).toMatch(/review: 3 changed files against main/) // the png is not code
+    expect(runs.some(a => a[0] === 'open' && String(a[1]).endsWith('/index.html#code'))).toBe(true)
+    await clock.advance(1600)
+    const data = writes['/tmp/mission-control/s/data.js'] ?? ''
+    expect(data).toContain('"id":"/repo/src/pages/login.tsx"')
+    expect(data).toContain('"id":"/repo/src/new.ts"')
+    expect(data).toContain('"state":"changed"') // shown as changed, with no turn running
+    expect(data).toContain('"from":"/repo/src/pages/login.tsx"') // imports linked as on the live map
+    expect(data).toContain('tokens now expire after an hour') // the one-line summary of each diff
+    expect(models).toHaveLength(1)
+
+    // /mission review reaches the same place; with no base it diffs HEAD.
+    expect((await $.command.run({ command: 'mission', args: 'review' } as any)).text).toMatch(/against HEAD/)
+    expect((await $.command.run({ command: 'mission', args: 'review nope' } as any)).text).toMatch(/could not diff against "nope"/)
+
+    // A real turn takes over: the review glow goes, the files stay.
+    await $.turn.start({ text: 'carry on', turnId: 't1' } as any)
+    await clock.advance(1600)
+    const after = writes['/tmp/mission-control/s/data.js'] ?? ''
+    expect(after).not.toContain('"state":"changed"')
+    expect(after).toContain('"id":"/repo/src/pages/login.tsx"')
+  })
+  test('/mission-review reads a pull request link through gh alone, from any folder', async ($, on) => {
+    const sha = 'a'.repeat(40)
+    const gh = (argv: string[]) => {
+      const cmd = argv.slice(1).join(' ')
+      if (argv[0] === 'git') return undefined // not inside any repository
+      if (cmd.startsWith('api repos/swile/app/pulls/7 ')) return JSON.stringify({ sha, base: 'main' })
+      if (cmd.startsWith('api repos/swile/app/pulls/7/files?per_page=100')) {
+        return [
+          { filename: 'src/pages/login.tsx', status: 'modified', patch: '@@ -1 +1 @@\n-old\n+new' },
+          { filename: 'src/gone.ts', status: 'removed' },
+          { filename: 'docs/logo.png', status: 'added' },
+        ].map(f => JSON.stringify(f)).join('\n')
+      }
+      if (cmd === `api -H Accept: application/vnd.github.raw repos/swile/app/contents/src/pages/login.tsx?ref=${sha}`) return "import { start } from '../auth/session'\n"
+      return undefined // any other pull request: gh fails
+    }
+    const { runs, writes, clock } = engine(on, { git: gh })
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/nowhere' } as any)
+    const r = await $.command.run({ command: 'mission-review', args: 'https://github.com/swile/app/pull/7/files' } as any)
+    expect(r.text).toMatch(/review: 1 changed files against PR #7 \(main\)/) // the removed file and the png are left out
+    expect(runs.some(a => a[0] === 'git')).toBe(false) // no clone, no fetch
+    await clock.advance(1600)
+    const data = writes['/tmp/mission-control/s/data.js'] ?? ''
+    expect(data).toContain('"id":"/swile/app/src/pages/login.tsx"')
+    expect(data).toContain('tokens now expire after an hour') // summarised from the patch
+    expect((await $.command.run({ command: 'mission-review', args: 'https://github.com/swile/app/pull/8' } as any)).text).toMatch(/could not read swile\/app pull request #8/)
+    expect(parsePr('https://github.com/swile/app/pull/7/files')).toEqual({ repo: 'swile/app', number: '7' })
+    expect(parsePr('#7')).toEqual({ repo: undefined, number: '7' })
+    expect(parsePr('main')).toBeUndefined()
+  })
+
+  test('/mission-review #123 reads a pull request of this repository from git, not the disk', async ($, on) => {
+    let fetched = ''
+    const git = (argv: string[]) => {
+      const cmd = argv.slice(argv[1] === '-C' ? 3 : 1).join(' ')
+      if (cmd === 'rev-parse --show-toplevel') return '/repo\n'
+      if (cmd === 'pr view 7 --json baseRefName') return '{"baseRefName":"main"}'
+      if (cmd.startsWith('fetch --quiet origin ')) return ((fetched = cmd.endsWith('pull/7/head') ? 'headsha' : 'basesha'), '')
+      if (cmd === 'rev-parse FETCH_HEAD') return fetched
+      if (cmd === 'merge-base basesha headsha') return 'mbsha\n'
+      if (cmd === 'diff --name-only -z mbsha headsha --') return 'src/pages/login.tsx\0src/gone.ts\0'
+      if (cmd === 'show headsha:src/pages/login.tsx') return "import { start } from '../auth/session'\n"
+      if (cmd === 'show headsha:src/gone.ts') return ''
+      if (cmd.startsWith('diff -U0 mbsha headsha')) return '-old\n+new\n'
+      return undefined
+    }
+    const { runs, writes, clock } = engine(on, { git })
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/repo' } as any)
+    const r = await $.command.run({ command: 'mission-review', args: '#7' } as any)
+    expect(r.text).toMatch(/review: 1 changed files against PR #7 \(main\)/) // the file the PR deletes is left out
+    expect(runs.some(a => a[0] === 'git' && a.includes('checkout'))).toBe(false) // the working tree is not touched
+    await clock.advance(1600)
+    expect(writes['/tmp/mission-control/s/data.js'] ?? '').toContain('"id":"/repo/src/pages/login.tsx"')
+    expect((await $.command.run({ command: 'mission-review', args: '#8' } as any)).text).toMatch(/gh could not read pull request #8/)
+  })
+  test('files are framed by what they are for', () => {
+    const kinds: Record<string, string> = {
+      '/r/src/login.tsx': 'Source',
+      '/r/src/login.test.tsx': 'Tests',
+      '/r/spec/models/user_spec.rb': 'Tests',
+      '/r/src/__tests__/helpers.ts': 'Tests',
+      '/r/config/locales/fr.yml': 'Translations',
+      '/r/src/i18n/en.json': 'Translations',
+      '/r/db/migrate/20240101_add_otp.rb': 'Database',
+      '/r/src/types.d.ts': 'API & contracts',
+      '/r/.env.local': 'Config & env',
+      '/r/vite.config.ts': 'Config & env',
+      '/r/config/settings.yml': 'Config & env',
+      '/r/package.json': 'Dependencies',
+      '/r/Gemfile.lock': 'Dependencies',
+      '/r/.github/workflows/ci.yml': 'CI & infra',
+      '/r/Dockerfile': 'CI & infra',
+      '/r/README.md': 'Docs',
+      '/r/src/app.scss': 'Styles',
+      '/r/config/locales/fr.spec.yml': 'Tests', // the first rule wins: a spec is a test wherever it sits
+    }
+    for (const [path, kind] of Object.entries(kinds)) expect([path, categoryOf(path)]).toEqual([path, kind])
+
+    const f = (path: string, imports: string[] = []) => ({ path, act: 'edit' as const, at: 0, changedTurn: 1, imports })
+    const out = mapData([f('/r/src/login.tsx', ['/r/src/session']), f('/r/src/session.ts'), f('/r/src/login.test.tsx', ['/r/src/login']), f('/r/.env.local')], { at: 99_999, turn: 1 })
+    expect(out.groups.map(g => [g.name, g.columns.flat().map(c => c.title)])).toEqual([
+      ['Source', ['login.tsx', 'session.ts']],
+      ['Tests', ['login.test.tsx']],
+      ['Config & env', ['.env.local']],
+    ])
+    expect(out.edges.map(e => `${e.from}>${e.to}`)).toContain('/r/src/login.test.tsx>/r/src/login.tsx') // arrows still cross frames
+    expect(mapData([f('/r/a.ts')], { at: 99_999, turn: 1 }).groups).toHaveLength(1) // one kind only: the page draws no frame
   })
 })

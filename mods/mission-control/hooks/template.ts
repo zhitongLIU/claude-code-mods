@@ -34,7 +34,11 @@ export const TEMPLATE = `<!doctype html>
   .hint { margin-left: auto; font-size: 11.5px; color: var(--faint); }
   #graph { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
   #edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
-  .cols { display: flex; gap: 64px; align-items: center; position: relative; }
+  .cols { display: flex; gap: 48px; align-items: flex-start; position: relative; }
+  .fcols { display: flex; gap: 64px; align-items: center; }
+  .frame { padding: 12px 20px 20px; border: 1.5px dashed var(--line); border-radius: 18px; background: rgba(255,255,255,.02); }
+  .frame.bare { padding: 0; border: 0; background: none; }
+  .frame-title { margin-bottom: 14px; font-size: 11.5px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); white-space: nowrap; }
   .col { display: flex; flex-direction: column; gap: 18px; width: max-content; max-width: 380px; min-width: 170px; }
   .card { position: relative; padding: 10px 16px 12px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--card);
     box-shadow: 0 4px 12px rgba(0,0,0,.45); }
@@ -124,23 +128,32 @@ export const TEMPLATE = `<!doctype html>
     document.getElementById('graph').style.display = '';
     var empty = document.querySelector('.empty'); if (empty) empty.remove();
 
-    var cards = {};
-    M.columns.forEach(function (col, ci) {
-      var colEl = h('div', 'col');
-      col.forEach(function (c) {
-        var el = h('div', 'card' + (c.live ? ' live' : '') + (c.state ? ' ' + c.state : ''));
-        var name = h('div', 'name', c.title);
-        var badge = c.live ? (c.state === 'edit' ? '\\u270e' : '\\u25cf') : c.state === 'changed' ? '\\u2713' : '';
-        if (badge) name.appendChild(h('span', 'badge', badge));
-        el.appendChild(name);
-        el.appendChild(h('div', 'sub', c.sub));
-        if (c.why) el.appendChild(h('div', 'why', c.why));
-        colEl.appendChild(el);
-        cards[c.id] = { el: el, col: ci };
-        place(el, c.id);
-        grab(el, c.id);
+    // One frame per kind of file (tests, translations, config...), named when there is more than one kind.
+    var cards = {}, ci = 0, framed = M.groups.length > 1;
+    M.groups.forEach(function (g) {
+      var frame = h('div', 'frame' + (framed ? '' : ' bare')), inner = h('div', 'fcols'), n = 0;
+      g.columns.forEach(function (col) {
+        var colEl = h('div', 'col');
+        col.forEach(function (c) {
+          var el = h('div', 'card' + (c.live ? ' live' : '') + (c.state ? ' ' + c.state : ''));
+          var name = h('div', 'name', c.title);
+          var badge = c.live ? (c.state === 'edit' ? '\\u270e' : '\\u25cf') : c.state === 'changed' ? '\\u2713' : '';
+          if (badge) name.appendChild(h('span', 'badge', badge));
+          el.appendChild(name);
+          el.appendChild(h('div', 'sub', c.sub));
+          if (c.why) el.appendChild(h('div', 'why', c.why));
+          colEl.appendChild(el);
+          cards[c.id] = { el: el, col: ci };
+          n++;
+          place(el, c.id);
+          grab(el, c.id);
+        });
+        inner.appendChild(colEl);
+        ci++;
       });
-      cols.appendChild(colEl);
+      if (framed) frame.appendChild(h('div', 'frame-title', g.name + ' · ' + n));
+      frame.appendChild(inner);
+      cols.appendChild(frame);
     });
     M.extra.length && foot.appendChild(h('b', '', 'ALSO READ'));
     M.extra.forEach(function (t) { foot.appendChild(h('span', 'chip', t)); });

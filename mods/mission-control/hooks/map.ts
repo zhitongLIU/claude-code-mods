@@ -1,5 +1,6 @@
 // The "code" view: files Claude touched, the imports between them, handed to the HTML page as data.
 import type { MapFile } from '../types'
+import { CATEGORIES, categoryOf } from './category'
 import { langFor, linksOf, stripExt } from './lang'
 
 // Relative imports in a source file, resolved against its folder, extension stripped.
@@ -68,7 +69,7 @@ export type MapData = {
   changed: number
   now: string // "reading login.tsx", or ''
   nowState: 'read' | 'edit' | null
-  columns: MapCard[][] // by import depth
+  groups: { name: string; columns: MapCard[][] }[] // one frame per kind of file, its columns by import depth
   edges: { from: string; to: string; hot: boolean }[]
   extra: string[] // files only read and linked to nothing
 }
@@ -76,7 +77,7 @@ export type MapData = {
 // Everything the page draws, as plain data: the template lays it out and draws the arrows.
 export function mapData(files: MapFile[], look: Look): MapData {
   const { at, turn } = look
-  const isChanged = (f: MapFile) => f.changedTurn === turn && turn > 0
+  const isChanged = (f: MapFile) => f.review === true || (f.changedTurn === turn && turn > 0)
   const isLive = (f: MapFile) => at - f.at < 5000
   const es = edges(files)
   const linked = new Set(es.flatMap(e => [e.from, e.to]))
@@ -99,7 +100,12 @@ export function mapData(files: MapFile[], look: Look): MapData {
     changed: files.filter(isChanged).length,
     now: newest ? `${newest.act === 'read' ? 'reading' : newest.act === 'search' ? 'searching' : 'editing'} ${title(newest)}` : '',
     nowState: newest ? (readLike(newest) ? 'read' : 'edit') : null,
-    columns: layout(main, mainEs).map(col => col.map(card)),
+    groups: CATEGORIES.flatMap(name => {
+      const inGroup = main.filter(f => categoryOf(f.path) === name)
+      const paths = new Set(inGroup.map(f => f.path))
+      const columns = layout(inGroup, mainEs.filter(e => paths.has(e.from) && paths.has(e.to))).map(col => col.map(card))
+      return inGroup.length ? [{ name, columns }] : []
+    }),
     edges: mainEs.map(e => ({ ...e, hot: [e.from, e.to].some(p => isChanged(byPath.get(p) as MapFile) || isLive(byPath.get(p) as MapFile)) })),
     extra: extra.map(title),
   }
