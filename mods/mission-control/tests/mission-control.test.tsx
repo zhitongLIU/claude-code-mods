@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
+import { SERVER, parseLine, portFor, splitLines } from '../hooks/bridge'
 import { categoryOf } from '../hooks/category'
 import { addedDiff, formatComment, formatReview, parseDiff } from '../hooks/diff'
 import { highlight } from '../hooks/highlight'
@@ -41,15 +42,15 @@ function engine(on: any, opts: { cmux?: boolean; focus?: string; git?: (argv: st
 
 describe('mission-control', () => {
   test('bug fixes from the demo video', () => {
-    // 1. A chain of imports lands in one column per depth, with an edge per import, a→c skipping b's column.
+    // 1. A chain of imports lands in one column per depth, with an edge per import, c→a skipping b's column.
     const f = (path: string, imports: string[]) => ({ path, act: 'edit' as const, at: 0, changedTurn: 1, imports })
     const chain = [f('/r/a.ts', ['/r/b', '/r/c']), f('/r/b.ts', ['/r/c']), f('/r/c.ts', [])]
     const out = mapData(chain, { at: 99_999, turn: 1 })
-    expect(out.groups[0]?.columns.map(col => col.map(c => c.title))).toEqual([['a.ts'], ['b.ts'], ['c.ts']])
+    expect(out.groups[0]?.columns.map(col => col.map(c => c.title))).toEqual([['c.ts'], ['b.ts'], ['a.ts']])
     expect(out.edges).toEqual([
-      { from: '/r/a.ts', to: '/r/b.ts', hot: true },
-      { from: '/r/a.ts', to: '/r/c.ts', hot: true },
-      { from: '/r/b.ts', to: '/r/c.ts', hot: true },
+      { from: '/r/b.ts', to: '/r/a.ts', hot: true },
+      { from: '/r/c.ts', to: '/r/a.ts', hot: true },
+      { from: '/r/c.ts', to: '/r/b.ts', hot: true },
     ])
   })
 
@@ -115,8 +116,8 @@ describe('mission-control', () => {
       { path: '/r/a.ts', act: 'read' as const, at: 0, changedTurn: 0, imports: ['/r/b'] },
       { path: '/r/b.ts', act: 'edit' as const, at: 0, changedTurn: 2, imports: [], why: 'adds a & b <check>' },
     ]
-    expect(edges(files)).toEqual([{ from: '/r/a.ts', to: '/r/b.ts' }])
-    expect(layout(files, edges(files))).toEqual([['/r/a.ts'], ['/r/b.ts']])
+    expect(edges(files)).toEqual([{ from: '/r/b.ts', to: '/r/a.ts' }])
+    expect(layout(files, edges(files))).toEqual([['/r/b.ts'], ['/r/a.ts']])
     const out = mapData(files, { at: 99_999, turn: 2 })
     expect(out.changed).toBe(1)
     expect(out.groups.flatMap(g => g.columns.flat()).find(c => c.title === 'b.ts')).toMatchObject({ state: 'changed', why: 'adds a & b <check>' }) // text stays text: the page sets it with textContent
@@ -145,8 +146,8 @@ describe('mission-control', () => {
       f('/r/app/models/user.rb', ['Base']),
     ]
     expect(edges(files)).toEqual([
-      { from: '/r/app/controllers/orders_controller.rb', to: rb },
-      { from: rb, to: '/r/app/domains/concerns/chorus_otp_rate_limit.rb' },
+      { from: rb, to: '/r/app/controllers/orders_controller.rb' },
+      { from: '/r/app/domains/concerns/chorus_otp_rate_limit.rb', to: rb },
     ])
     // The adapter is picked by extension: a .ts file mentioning a Ruby-looking name links to nothing.
     expect(edges([f('/r/a.ts', ['RequestChorusOtp']), f(rb)])).toEqual([])
@@ -233,7 +234,7 @@ describe('mission-control', () => {
     expect(data).toContain('session.ts')
     expect(data).not.toContain('"id":"/repo/shots/v2.png"') // an image is not on the code map
     expect(data).not.toContain('SubagentHandback')
-    expect(data).toContain('"from":"/repo/src/pages/login.tsx"') // the import edge login → session
+    expect(data).toContain('"from":"/repo/src/auth/session.ts"') // the import edge session → login (login uses session)
     expect(data).toContain('tokens now expire after an hour') // the why, never cut
 
     // Outside cmux the default browser opens it; /mission off stops the writing.
@@ -271,7 +272,7 @@ describe('mission-control', () => {
     expect(data).toContain('"id":"/repo/src/pages/login.tsx"')
     expect(data).toContain('"id":"/repo/src/new.ts"')
     expect(data).toContain('"state":"changed"') // shown as changed, with no turn running
-    expect(data).toContain('"from":"/repo/src/pages/login.tsx"') // imports linked as on the live map
+    expect(data).toContain('"from":"/repo/src/auth/session.ts"') // imports linked as on the live map
     expect(data).toContain('tokens now expire after an hour') // the one-line summary of each diff
     expect(models).toHaveLength(1)
     const shown = JSON.parse((writes['/tmp/mission-control/s/diffs.js'] ?? '').replace(/^window\.DIFFS = /, '').replace(/;$/, ''))
@@ -446,11 +447,31 @@ describe('mission-control', () => {
     const f = (path: string, imports: string[] = []) => ({ path, act: 'edit' as const, at: 0, changedTurn: 1, imports })
     const out = mapData([f('/r/src/login.tsx', ['/r/src/session']), f('/r/src/session.ts'), f('/r/src/login.test.tsx', ['/r/src/login']), f('/r/.env.local')], { at: 99_999, turn: 1 })
     expect(out.groups.map(g => [g.name, g.columns.flat().map(c => c.title)])).toEqual([
-      ['Source', ['login.tsx', 'session.ts']],
+      ['Source', ['session.ts', 'login.tsx']],
       ['Tests', ['login.test.tsx']],
       ['Config & env', ['.env.local']],
     ])
-    expect(out.edges.map(e => `${e.from}>${e.to}`)).toContain('/r/src/login.test.tsx>/r/src/login.tsx') // arrows still cross frames
+    expect(out.edges.map(e => `${e.from}>${e.to}`)).toContain('/r/src/login.tsx>/r/src/login.test.tsx') // arrows still cross frames
     expect(mapData([f('/r/a.ts')], { at: 99_999, turn: 1 }).groups).toHaveLength(1) // one kind only: the page draws no frame
+  })
+
+  test('the page sends a review back to the session through a local server', () => {
+    // Stdout arrives cut anywhere: only whole lines are read.
+    const a = splitLines('', '{"beat":1}\n{"send":"hel')
+    expect(a).toEqual({ done: ['{"beat":1}'], rest: '{"send":"hel' })
+    expect(splitLines(a.rest, 'lo"}\n').done).toEqual(['{"send":"hello"}'])
+    expect(parseLine('{"ready":true,"port":4242,"token":"abc123"}')).toEqual({ ready: true, port: 4242, token: 'abc123' })
+    expect(parseLine('{"send":"Code review comments (1):"}')).toEqual({ send: 'Code review comments (1):' })
+    expect(parseLine('{"ready":true,"port":4242,"token":"../x"}')).toBeUndefined() // a token is word characters only
+    expect(parseLine('Server listening')).toBeUndefined()
+    // A session keeps its port; another session very likely has another.
+    expect(portFor('s')).toBe(portFor('s'))
+    expect(portFor('s')).toBeGreaterThan(19_999)
+    expect(portFor('s')).toBeLessThan(60_000)
+    // The page sends through the server when it is served over http, and falls back to the clipboard.
+    expect(TEMPLATE).toContain("CAN_SEND = location.protocol === 'http:'")
+    expect(TEMPLATE).toContain("fetch('send'")
+    expect(SERVER).toContain('127.0.0.1')
+    expect(SERVER).not.toMatch(/`|\$\{/)
   })
 })

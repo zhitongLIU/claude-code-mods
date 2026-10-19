@@ -10,8 +10,9 @@ export function importsOf(path: string, text: string): string[] {
 
 export type Edge = { from: string; to: string }
 
-// An arrow from each file to the files it imports, and to the files whose class or module
-// it mentions (per language, see lang.ts). Only files on the map can be linked.
+// An arrow from each file to the files that use it: the ones that import it, or mention its class
+// or module (per language, see lang.ts). So an arrow reads "a change here reaches there".
+// Only files on the map can be linked.
 export function edges(files: MapFile[]): Edge[] {
   const byBase = new Map(files.map(f => [stripExt(f.path), f.path]))
   const owners = new Map<string, string>() // "lang:Name" → the file that defines it
@@ -20,8 +21,8 @@ export function edges(files: MapFile[]): Edge[] {
     for (const name of lang?.defines(f.path) ?? []) owners.set(`${lang?.name}:${name}`, f.path)
   }
   const out: Edge[] = []
-  const add = (from: string, to: string | undefined) => {
-    if (to && to !== from && !out.some(e => e.from === from && e.to === to)) out.push({ from, to })
+  const add = (user: string, used: string | undefined) => {
+    if (used && used !== user && !out.some(e => e.from === used && e.to === user)) out.push({ from: used, to: user })
   }
   for (const f of files) {
     for (const target of f.imports) add(f.path, byBase.get(target))
@@ -31,7 +32,7 @@ export function edges(files: MapFile[]): Edge[] {
   return out
 }
 
-// Columns by import depth: a file goes one column right of the files that import it.
+// Columns by import depth: a file goes one column right of the files it uses, so the arrows run left to right.
 export function layout(files: MapFile[], es: Edge[]) {
   const depth = new Map(files.map(f => [f.path, 0]))
   for (let pass = 0; pass < files.length; pass++) {
