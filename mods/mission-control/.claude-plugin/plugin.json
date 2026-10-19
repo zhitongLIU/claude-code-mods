@@ -3,8 +3,8 @@
   "version": "0.2.0",
   "description": "/mission opens a live map of the main agent, its subagents and every tool call, plus a code map of the files they touch.",
   "author": {
-    "name": "Hamza Zafar",
-    "url": "https://github.com/hamzafer"
+    "name": "Zhitong Liu",
+    "url": "https://github.com/zhitongLIU"
   },
   "types": "./types/index.d.ts"
 }

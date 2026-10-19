@@ -1,6 +1,6 @@
 # claude-code-mods
 
-Zhitong's Claude Code mods. Forked from [hamzafer/claude-code-mods](https://github.com/hamzafer/claude-code-mods) (MIT).
+Zhitong's Claude Code mods. Inspired by [hamzafer/claude-code-mods](https://github.com/hamzafer/claude-code-mods) (MIT).
 
 ## mission
 
@@ -8,15 +8,15 @@ Zhitong's Claude Code mods. Forked from [hamzafer/claude-code-mods](https://gith
 
 It opens in a cmux browser split when run inside cmux, otherwise in your default browser.
 
-Changes from upstream `mission-control`:
+How it works:
 
-- The terminal pane is gone: `/mission` opens the web page. No Chrome screenshot is needed any more.
+- `/mission` opens a web page; there is no terminal pane and no screenshot step.
 - The page (`hooks/template.ts`) is plain HTML and CSS fed by a small `data.js`, not a hand-built SVG. Text wraps by itself, so nothing is cut with `…`, and restyling means editing HTML/CSS.
 - The per-file "why" is asked from the model (haiku) only once `/mission` has opened the page, then once per change.
 - Nothing is written until `/mission` runs, and `/mission off` stops it. Writes are skipped when the data has not changed.
 - An arrow `A → B` means B uses A (a change in A reaches B), so used files sit on the left and their users to the right. Arrows come from per-language adapters (`hooks/lang.ts`): JS/TS and Python follow relative imports, Ruby follows `require_relative` and the class or module names a file mentions (`RequestChorusOtp` links to `request_chorus_otp.rb`), as Rails loads code by name. Add a language by adding an adapter.
 - Each session has its own page folder, so several Claude Code sessions can run `/mission` side by side without sharing data.
-- Kept from upstream: the one-line band above the prompt while Claude works.
+- A one-line band above the prompt sums up the turn while Claude works.
 
 ### Install
 
@@ -62,4 +62,4 @@ CLAUDE_CONFIG_DIR=$(mktemp -d) claude plugin test mods/mission-control
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Original work by Hamza Zafar.
+MIT, see [LICENSE](LICENSE). Inspired by [hamzafer/claude-code-mods](https://github.com/hamzafer/claude-code-mods) by Hamza Zafar, whose copyright notice stays in the license.
