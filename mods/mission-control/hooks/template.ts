@@ -3,7 +3,7 @@
 // window.MAP in data.js (see writePage in register.tsx), which it re-reads every second.
 // Restyle it here; nothing else needs to change. The tab lives in the URL hash (#who, #code).
 // Clicking a changed box on the code map slides a diff drawer up from the bottom (diffs.js, see writePage):
-// pick lines, comment, and copy the review to paste into Claude.
+// pick lines, comment, and send the review to Claude (when the mod serves the page) or copy it to paste anywhere.
 // Keep this free of backticks, dollar-brace sequences and backslashes: it is one template literal.
 import { formatComment, formatReview, parseDiff } from './diff'
 import { highlight } from './highlight'
@@ -41,6 +41,7 @@ export const TEMPLATE = `<!doctype html>
   #stage.drag { cursor: grabbing; }
   .hint { margin-left: auto; font-size: 11.5px; color: var(--faint); }
   #graph { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  #legend { position: absolute; left: 14px; bottom: 12px; display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--faint); pointer-events: none; }
   #edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
   .cols { display: flex; gap: 48px; align-items: flex-start; position: relative; }
   .fcols { display: flex; gap: 64px; align-items: center; }
@@ -112,7 +113,7 @@ export const TEMPLATE = `<!doctype html>
 </style>
 <header id="head"></header>
 <div id="who" hidden></div>
-<div id="stage"><div id="graph"><svg id="edges"></svg><div class="cols" id="cols"></div></div></div>
+<div id="stage"><div id="graph"><svg id="edges"></svg><div class="cols" id="cols"></div></div><div id="legend"><svg width="30" height="8"><line x1="1" y1="4" x2="22" y2="4" stroke="#6b7a96" stroke-width="1.5"/><path d="M21,0.5L29,4L21,7.5z" fill="#6b7a96"/></svg>A → B: B uses A (a change in A reaches B)</div></div>
 <footer id="foot"></footer>
 <div id="drawer" hidden></div>
 <script src="hljs.js"></script>
@@ -197,8 +198,8 @@ export const TEMPLATE = `<!doctype html>
         send.onclick = sendReview;
         head.appendChild(send);
       }
-      if (fresh < pending.length) {
-        var all = h('button', 'tab', (fresh ? 'Copy all (' : 'Copy again (') + pending.length + ')');
+      if (CAN_SEND || fresh < pending.length) {
+        var all = h('button', 'tab', (CAN_SEND ? 'Copy (' : fresh ? 'Copy all (' : 'Copy again (') + pending.length + ')');
         all.title = 'Copy every comment on the page, the ones already copied too';
         all.onclick = function () { copyAll(); };
         head.appendChild(all);
@@ -401,7 +402,7 @@ export const TEMPLATE = `<!doctype html>
 
 
   // The diff drawer: the open file, the rows picked to comment on, the comment being written, and the review so far.
-  var openPath = null, sel = null, draftText = '', REVKEY = 'mission-review:' + location.pathname, pending = [], DIFFREV = null;
+  var openPath = null, sel = null, draftText = '', CAN_SEND = location.protocol === 'http:', REVKEY = 'mission-review:' + (CAN_SEND ? 'http' : location.pathname), pending = [], DIFFREV = null;
   try { pending = JSON.parse(localStorage.getItem(REVKEY) || '[]') || []; } catch (err) { pending = []; }
   function savePending() { try { localStorage.setItem(REVKEY, JSON.stringify(pending)); } catch (err) {} }
   function hasDiff(M, id) { return !!(M.diffs && M.diffs.paths.indexOf(id) >= 0); }
@@ -437,24 +438,26 @@ export const TEMPLATE = `<!doctype html>
   }
   // Copying keeps the comments, marked as sent, so a paste that goes wrong costs nothing. They go when Claude
   // changes their file again (sweep); a comment not copied yet is never dropped, only marked outdated.
-  function sendReview() {
-    var list = pending.filter(function (c) { return !c.sent; });
-    copyText(formatReview(list, refOf(list)), function () {
+  // To Claude's session when the page is served by the mod (CAN_SEND), else, or where that fails, to the clipboard.
+  function deliver(text, done) {
+    function copy() { copyText(text, function () { done(false); }); }
+    if (!CAN_SEND) return copy();
+    fetch('send', { method: 'POST', body: JSON.stringify({ text: text }) }).then(function (r) { if (r.ok) done(true); else copy(); }, copy);
+  }
+  function said(n, sent) {
+    var what = n + ' comment' + (n === 1 ? '' : 's');
+    return sent ? 'Sent ' + what + ' to Claude.' : 'Copied ' + what + '. Paste ' + (n === 1 ? 'it' : 'them') + ' into Claude.';
+  }
+  function ship(list, send) {
+    (send ? deliver : function (text, done) { copyText(text, function () { done(false); }); })(formatReview(list, refOf(list)), function (sent) {
       list.forEach(function (c) { c.sent = true; });
       savePending();
-      toast('Copied ' + list.length + ' comment' + (list.length === 1 ? '' : 's') + '. Paste them into Claude.');
+      toast(said(list.length, sent));
       render(window.MAP); renderDrawer();
     });
   }
-  function copyAll() {
-    var list = pending.slice();
-    copyText(formatReview(list, refOf(list)), function () {
-      list.forEach(function (c) { c.sent = true; });
-      savePending();
-      toast('Copied ' + list.length + ' comment' + (list.length === 1 ? '' : 's') + '. Paste them into Claude.');
-      render(window.MAP); renderDrawer();
-    });
-  }
+  function sendReview() { ship(pending.filter(function (c) { return !c.sent; }), true); }
+  function copyAll() { ship(pending.slice(), false); }
   // A fingerprint of a file's diff: it changes when the file does.
   function fpOf(text) {
     var x = 7;
@@ -485,7 +488,7 @@ export const TEMPLATE = `<!doctype html>
     sel = null; draftText = '';
     pending.push(c); savePending();
     render(window.MAP); renderDrawer();
-    if (send) copyText(formatReview([c], c.ref), function () { toast('Copied. Paste it into Claude.'); });
+    if (send) deliver(formatReview([c], c.ref), function (sent) { toast(said(1, sent)); });
   }
   var rowsNow = [], selDrag = false;
   // The rows under the selection, lit as the mouse moves; the comment box comes once the button is let go.

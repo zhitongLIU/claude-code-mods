@@ -8,6 +8,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { MapFile, MissionNode, MissionWhere } from '../types'
 import { linksOf } from './lang'
+import { SERVER, parseLine, portFor, splitLines } from './bridge'
 import { addedDiff } from './diff'
 import { HLJS } from './vendor-hljs'
 import { mapData } from './map'
@@ -39,7 +40,9 @@ const sid = atom({ plugin: 'mission', key: 'sid' } as const, '') // this session
 const page = { on: false, pending: false, dirty: false, last: '', lastDiffs: '', written: false }
 // The edits awaiting their one-line "why" live on the files atom (MapFile.edits), so a reload keeps
 // them; the "why" is asked for lazily: no model call while nobody watches.
-const asking = new Set<string>() // paths a model call is already explaining
+const asking = new Set<string>()
+// The local server that serves the page and carries "Send to Claude" back; a reload ends it with the module.
+const bridge: { base?: string; starting?: Promise<string | undefined>; stop: boolean } = { stop: false } // paths a model call is already explaining
 
 // Under the cap, the oldest tool calls go first; main and the agents always stay.
 export function cap(list: MissionNode[]) {
@@ -179,6 +182,9 @@ async function run($: EngineInterface, args: string) {
   const arg = args.trim()
   if (arg.toLowerCase() === 'off') {
     page.on = false
+    bridge.stop = true // the server's read loop ends at its next beat, which ends the server
+    bridge.base = undefined
+    bridge.starting = undefined
     return { text: 'Mission Control: page stopped. /mission opens it again.' }
   }
   let note = ''
@@ -196,7 +202,7 @@ async function run($: EngineInterface, args: string) {
   const s = summary(await read($, nodes))
   page.on = true
   await writePage($)
-  const opened = await openPage($, arg ? 'code' : undefined)
+  const opened = await openPage($, arg ? 'code' : undefined, await startBridge($))
   void explainPending($).catch(() => {}) // the map is watched now: explain what changed while it was not
   return { text: `Mission Control: ${note}${s.agents} agents · ${s.tools} tool calls · ${(await read($, files)).length} files. ${opened}` }
 }
@@ -473,10 +479,46 @@ async function focusedWorkspace($: EngineInterface) {
   }
 }
 
+// Starts the page's local server once; resolves its address, or undefined where Node is missing or it does not come up
+// (the page then opens from disk and keeps its clipboard buttons). A line the page sent is submitted as a prompt.
+function startBridge($: EngineInterface): Promise<string | undefined> {
+  if (bridge.base) return Promise.resolve(bridge.base)
+  bridge.starting ??= new Promise<string | undefined>(resolve => {
+    bridge.stop = false
+    $.clock.after(4000, () => resolve(undefined))
+    void (async () => {
+      const dir = await pageDir($)
+      await $.fs.write(`${dir}/server.mjs`, SERVER)
+      let rest = ''
+      for await (const piece of $.process.spawn({ argv: ['node', `${dir}/server.mjs`, dir, String(portFor((await read($, sid)) || 'session'))] })) {
+        if (bridge.stop) break // leaving the loop ends the child
+        const { stream, text } = piece as { stream?: string; text?: string }
+        if (stream !== 'stdout' || text === undefined) continue
+        const got = splitLines(rest, text)
+        rest = got.rest
+        for (const line of got.done) {
+          const msg = parseLine(line)
+          if (msg && 'ready' in msg) {
+            bridge.base = `http://127.0.0.1:${msg.port}/${msg.token}`
+            resolve(bridge.base)
+          } else if (msg && 'send' in msg) void $.prompt.submit({ text: msg.send }).catch(() => {})
+        }
+      }
+    })()
+      .catch(() => {})
+      .finally(() => {
+        bridge.base = undefined
+        bridge.starting = undefined
+        resolve(undefined)
+      })
+  })
+  return bridge.starting
+}
+
 // In a cmux split when this runs inside cmux, otherwise in the default browser.
 // Without a tab the page opens on the one the person used last.
-async function openPage($: EngineInterface, tab?: 'code') {
-  const url = `file://${encodeURI(await pageDir($))}/index.html${tab ? `#${tab}` : ''}`
+async function openPage($: EngineInterface, tab?: 'code', base?: string) {
+  const url = `${base ?? `file://${encodeURI(await pageDir($))}`}/index.html${tab ? `#${tab}` : ''}`
   const inCmux = Boolean(await $.env.get('CMUX_WORKSPACE_ID'))
   // cmux splits go to $CMUX_WORKSPACE_ID, fixed when Claude Code started: stale once the tab moved or the
   // session was resumed elsewhere. The workspace in focus is the one the person just typed /mission in.
