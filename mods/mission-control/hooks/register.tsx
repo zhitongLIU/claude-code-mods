@@ -146,7 +146,10 @@ export const register: Register = on => {
       return list.map(n => (close(n) && n.status === 'running' ? { ...n, status: failed ? 'failed' : 'done', end: Date.now() } : n))
     })
     await publish($)
-    if (isMain && page.on) void explainPending($).catch(() => {}) // in the background, so the turn ends at once
+    if (isMain && page.on) {
+      void explainPending($).catch(() => {}) // in the background, so the turn ends at once
+      void refreshWhere($).catch(() => {})
+    }
     return r
   })
 
@@ -205,6 +208,18 @@ async function run($: EngineInterface, args: string) {
   const opened = await openPage($, arg ? 'code' : undefined, await startBridge($))
   void explainPending($).catch(() => {}) // the map is watched now: explain what changed while it was not
   return { text: `Mission Control: ${note}${s.agents} agents · ${s.tools} tool calls · ${(await read($, files)).length} files. ${opened}` }
+}
+
+// The page's branch and pull request, read again when a turn ends: a pull request opened (or a branch switched)
+// since /mission ran shows up. A review's own base is left alone, and gh is asked only while there is no pull request.
+async function refreshWhere($: EngineInterface) {
+  const now = await read($, where)
+  if (now.base || (now.branch && now.pr)) return
+  const next = await liveWhere($)
+  if (next.branch !== now.branch || next.pr?.number !== now.pr?.number) {
+    await update($, where, () => next)
+    await publish($)
+  }
 }
 
 // A GitHub pull request named as a link or as #123: its number, and the repo when a link says which.
