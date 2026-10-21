@@ -116,7 +116,7 @@ export function splitByDiff(chosen: Finding[], patches: Record<string, string>) 
 export function reviewPayload(inline: Finding[], rest: Finding[], sha: string) {
   const n = inline.length + rest.length
   const where = (f: Finding) => `${rel(f.file)}${f.line ? `:${f.line}` : ''}`
-  const body = [`${n} finding${n === 1 ? '' : 's'} from an AI review, approved by the reviewer.`, ...(rest.length ? ['', 'Not on a line of this diff:', ...rest.map(f => `- \`${where(f)}\` ${commentBody(f).replace(/\n+/g, ' ')}`)] : [])].join('\n')
+  const body = [`${n} finding${n === 1 ? '' : 's'} from an AI review.`, ...(rest.length ? ['', 'Not on a line of this diff:', ...rest.map(f => `- \`${where(f)}\` ${commentBody(f).replace(/\n+/g, ' ')}`)] : [])].join('\n')
   return {
     commit_id: sha,
     event: 'COMMENT',
