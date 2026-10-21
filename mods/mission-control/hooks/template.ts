@@ -111,7 +111,7 @@ export const TEMPLATE = `<!doctype html>
   .note span { flex: 1; overflow-wrap: anywhere; }
   .note.sent { opacity: .6; }
   .finding { display: flex; gap: 10px; align-items: flex-start; margin: 6px 16px 8px 68px; padding: 8px 12px; border: 1px solid var(--flag); border-radius: 8px; background: #26121d; font: 13px -apple-system, sans-serif; width: min(640px, calc(100% - 100px)); white-space: normal; }
-  .finding input { margin-top: 3px; accent-color: var(--flag); }
+  .finding input.fsw { margin-top: 0; }
   .finding .fbody { flex: 1; overflow-wrap: anywhere; } .finding b { color: #ffb3d6; }
   .finding .fsc { margin-top: 4px; color: #c9a3b6; line-height: 18px; }
   .finding.posted { opacity: .55; }
@@ -123,10 +123,17 @@ export const TEMPLATE = `<!doctype html>
   #flist label { display: flex; gap: 8px; align-items: flex-start; padding: 5px 12px; cursor: pointer; line-height: 18px; }
   #flist label:hover { background: #26121d; }
   #flist label.posted { opacity: .5; cursor: default; }
-  #flist input { margin-top: 3px; accent-color: var(--flag); }
   #flist .fl-line { flex: none; color: var(--flag); font: 11.5px 'SF Mono', Menlo, monospace; min-width: 34px; }
   #flist .fl-open { border: 0; background: none; color: var(--dim); cursor: pointer; font-size: 12px; }
   .pill.flag { cursor: pointer; }
+  input.fsw { appearance: none; -webkit-appearance: none; flex: none; position: relative; width: 40px; height: 22px; margin: 0; border-radius: 11px; background: #3a2a34; border: 1px solid #5a3a4c; cursor: pointer; transition: background .15s; }
+  input.fsw::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #c9a3b6; transition: transform .15s, background .15s; }
+  input.fsw:checked { background: var(--flag); border-color: var(--flag); }
+  input.fsw:checked::after { transform: translateX(18px); background: #fff; }
+  input.fsw:disabled { opacity: .4; cursor: default; }
+  .finding { cursor: pointer; } .finding.posted { cursor: default; }
+  .swall { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: #151b27; color: var(--text); font-size: 13px; cursor: pointer; user-select: none; }
+  .swall:hover { border-color: var(--flag); }
   .note button { border: 0; background: none; color: var(--faint); cursor: pointer; }
   .editor textarea { display: block; width: 100%; min-height: 58px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #0d1015; color: var(--text); font: 13px -apple-system, sans-serif; resize: vertical; }
   .editor .btns { display: flex; gap: 8px; margin-top: 8px; }
@@ -224,9 +231,12 @@ export const TEMPLATE = `<!doctype html>
     var openF = fAll.filter(function (f) { return !f.posted; });
     if (openF.length) {
       var npicked = Object.keys(fpick).length;
-      var all = h('button', 'tab', npicked === 0 ? 'Select all findings' : npicked === openF.length ? 'Unselect all' : 'Select all (' + openF.length + ')');
-      all.title = 'Pick or drop every finding that is not pushed yet; tick them one by one in the list or under their line';
-      all.onclick = function () { var every = Object.keys(fpick).length === openF.length; fpick = {}; if (!every) openF.forEach(function (f) { fpick[f.id] = true; }); render(window.MAP); renderDrawer(); };
+      var all = h('label', 'swall'), sw = document.createElement('input');
+      sw.type = 'checkbox'; sw.className = 'fsw'; sw.checked = npicked === openF.length;
+      sw.onchange = function () { fpick = {}; if (sw.checked) openF.forEach(function (f) { fpick[f.id] = true; }); render(window.MAP); renderDrawer(); };
+      all.appendChild(sw);
+      all.appendChild(h('span', '', npicked && npicked < openF.length ? npicked + ' of ' + openF.length + ' picked' : 'All findings (' + openF.length + ')'));
+      all.title = 'Pick or drop every finding that is not pushed yet; switch them one by one in the list or under their line';
       head.appendChild(all);
     }
     if (Object.keys(fpick).length) {
@@ -576,7 +586,7 @@ export const TEMPLATE = `<!doctype html>
       el.appendChild(file);
       FL[p].forEach(function (f) {
         var row = h('label', f.posted ? 'posted' : ''), box = document.createElement('input');
-        box.type = 'checkbox'; box.checked = !!fpick[f.id]; box.disabled = !!f.posted;
+        box.type = 'checkbox'; box.className = 'fsw'; box.checked = !!fpick[f.id]; box.disabled = !!f.posted;
         box.onchange = function () { if (box.checked) fpick[f.id] = true; else delete fpick[f.id]; render(window.MAP); renderDrawer(); };
         row.appendChild(box);
         row.appendChild(h('span', 'fl-line', f.line ? 'L' + f.line : 'file'));
@@ -620,7 +630,7 @@ export const TEMPLATE = `<!doctype html>
   function findingEl(f) {
     var el = h('div', 'finding' + (f.posted ? ' posted' : ''));
     var box = document.createElement('input');
-    box.type = 'checkbox'; box.checked = !!fpick[f.id]; box.disabled = !!f.posted;
+    box.type = 'checkbox'; box.className = 'fsw'; box.checked = !!fpick[f.id]; box.disabled = !!f.posted;
     box.title = f.posted ? 'Already on the pull request' : 'Pick to send to Claude' + (canPost() ? ' or post to the pull request' : '');
     box.onchange = function () { if (box.checked) fpick[f.id] = true; else delete fpick[f.id]; render(window.MAP); renderDrawer(); };
     var body = h('div', 'fbody');
@@ -628,6 +638,7 @@ export const TEMPLATE = `<!doctype html>
     if (f.scenario) body.appendChild(h('div', 'fsc', f.scenario));
     if (f.posted) body.appendChild(h('div', 'fsc', '\\u2713 pushed to the pull request'));
     el.appendChild(box); el.appendChild(body);
+    el.onclick = function (e) { if (e.target !== box && !box.disabled) box.click(); }; // the whole card is the target, not just the switch
     return el;
   }
   function sameRow(a, b) { return a.k === b.k && a.o === b.o && a.n === b.n; }
