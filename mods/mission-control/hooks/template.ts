@@ -115,6 +115,18 @@ export const TEMPLATE = `<!doctype html>
   .finding .fbody { flex: 1; overflow-wrap: anywhere; } .finding b { color: #ffb3d6; }
   .finding .fsc { margin-top: 4px; color: #c9a3b6; line-height: 18px; }
   .finding.posted { opacity: .55; }
+  #flist { position: fixed; right: 16px; top: 64px; width: 400px; max-width: calc(100% - 32px); max-height: 60vh; overflow: auto; z-index: 8; border: 1px solid var(--flag); border-radius: 10px; background: #1a0f17; box-shadow: 0 12px 32px rgba(0,0,0,.55); font: 13px -apple-system, sans-serif; }
+  #flist[hidden] { display: none; }
+  #flist .fl-head { position: sticky; top: 0; display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #1a0f17; border-bottom: 1px solid #4a2438; }
+  #flist .fl-head b { flex: 1; color: #ffb3d6; }
+  #flist .fl-file { padding: 8px 12px 2px; font: 11.5px 'SF Mono', Menlo, monospace; color: var(--dim); }
+  #flist label { display: flex; gap: 8px; align-items: flex-start; padding: 5px 12px; cursor: pointer; line-height: 18px; }
+  #flist label:hover { background: #26121d; }
+  #flist label.posted { opacity: .5; cursor: default; }
+  #flist input { margin-top: 3px; accent-color: var(--flag); }
+  #flist .fl-line { flex: none; color: var(--flag); font: 11.5px 'SF Mono', Menlo, monospace; min-width: 34px; }
+  #flist .fl-open { border: 0; background: none; color: var(--dim); cursor: pointer; font-size: 12px; }
+  .pill.flag { cursor: pointer; }
   .note button { border: 0; background: none; color: var(--faint); cursor: pointer; }
   .editor textarea { display: block; width: 100%; min-height: 58px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #0d1015; color: var(--text); font: 13px -apple-system, sans-serif; resize: vertical; }
   .editor .btns { display: flex; gap: 8px; margin-top: 8px; }
@@ -125,6 +137,7 @@ export const TEMPLATE = `<!doctype html>
 <div id="stage"><div id="graph"><svg id="edges"></svg><div class="cols" id="cols"></div></div><div id="legend"><svg width="30" height="8"><line x1="1" y1="4" x2="22" y2="4" stroke="#6b7a96" stroke-width="1.5"/><path d="M21,0.5L29,4L21,7.5z" fill="#6b7a96"/></svg>A → B: B uses A (a change in A reaches B)</div></div>
 <footer id="foot"></footer>
 <div id="drawer" hidden></div>
+<div id="flist" hidden></div>
 <script src="hljs.js"></script>
 <script src="data.js"></script>
 <script>
@@ -202,11 +215,17 @@ export const TEMPLATE = `<!doctype html>
     head.appendChild(h('span', 'pill' + (M.changed ? ' on' : ''), M.changed + ' changed'));
     var FL = M.findings || {}, fAll = [];
     Object.keys(FL).forEach(function (p) { FL[p].forEach(function (f) { fAll.push(f); }); });
-    if (fAll.length) head.appendChild(h('span', 'pill flag', '\\u2691 ' + fAll.length + ' finding' + (fAll.length === 1 ? '' : 's')));
+    if (fAll.length) {
+      var fp = h('span', 'pill flag', '\\u2691 ' + fAll.length + ' finding' + (fAll.length === 1 ? '' : 's') + (showList ? ' \\u25b4' : ' \\u25be'));
+      fp.title = 'Show every finding, to pick them one by one';
+      fp.onclick = function () { showList = !showList; render(window.MAP); };
+      head.appendChild(fp);
+    }
     var openF = fAll.filter(function (f) { return !f.posted; });
     if (canPost() && openF.length) {
-      var all = h('button', 'tab', Object.keys(fpick).length === openF.length ? 'Unselect findings' : 'Select findings');
-      all.title = 'Pick every finding that is not on the pull request yet';
+      var npicked = Object.keys(fpick).length;
+      var all = h('button', 'tab', npicked === 0 ? 'Select all findings' : npicked === openF.length ? 'Unselect all' : 'Select all (' + openF.length + ')');
+      all.title = 'Pick or drop every finding that is not on the pull request yet; tick them one by one in the list or under their line';
       all.onclick = function () { var every = Object.keys(fpick).length === openF.length; fpick = {}; if (!every) openF.forEach(function (f) { fpick[f.id] = true; }); render(window.MAP); renderDrawer(); };
       head.appendChild(all);
     }
@@ -217,6 +236,7 @@ export const TEMPLATE = `<!doctype html>
       head.appendChild(postBtn);
     }
     if (M.post && M.post.note) head.appendChild(h('span', 'pill', M.post.note));
+    renderList(M);
     if (pending.length) {
       var fresh = pending.filter(function (c) { return !c.sent; }).length;
       if (fresh) {
@@ -529,7 +549,38 @@ export const TEMPLATE = `<!doctype html>
   window.addEventListener('mouseup', function () { if (selDrag) { selDrag = false; renderDrawer(); } });
   function diffOf(path) { return window.DIFFS && window.DIFFS[path]; }
   // Review findings: the reviewer picks the ones to push to the pull request. Only ids go back; the mod posts what it holds.
-  var fpick = {};
+  var fpick = {}, showList = false;
+  // Every finding in one panel, one checkbox each, so none needs its file opened to be picked or dropped.
+  function renderList(M) {
+    var el = document.getElementById('flist'), keep = el.scrollTop, FL = M.findings || {}, paths = Object.keys(FL);
+    el.textContent = '';
+    el.hidden = !showList || !paths.length || tab() !== 'code';
+    if (el.hidden) return;
+    var head = h('div', 'fl-head'), n = Object.keys(fpick).length;
+    head.appendChild(h('b', '', n ? n + ' picked' : 'Pick findings to post'));
+    var x = h('button', 'fl-open', '\\u00d7'); x.title = 'Close the list';
+    x.onclick = function () { showList = false; render(window.MAP); };
+    head.appendChild(x);
+    el.appendChild(head);
+    paths.forEach(function (p) {
+      var file = h('div', 'fl-file', p.split('/').slice(-2).join('/'));
+      file.title = p;
+      el.appendChild(file);
+      FL[p].forEach(function (f) {
+        var row = h('label', f.posted ? 'posted' : ''), box = document.createElement('input');
+        box.type = 'checkbox'; box.checked = !!fpick[f.id]; box.disabled = f.posted || !canPost();
+        box.onchange = function () { if (box.checked) fpick[f.id] = true; else delete fpick[f.id]; render(window.MAP); renderDrawer(); };
+        row.appendChild(box);
+        row.appendChild(h('span', 'fl-line', f.line ? 'L' + f.line : 'file'));
+        row.appendChild(h('span', '', (f.posted ? '\\u2713 ' : '') + f.summary));
+        var go = h('button', 'fl-open', '\\u2197'); go.title = 'Open the diff at this finding';
+        go.onclick = function (e) { e.preventDefault(); if (openPath !== p) toggleDrawer(p); else renderDrawer(); };
+        row.appendChild(go);
+        el.appendChild(row);
+      });
+    });
+    el.scrollTop = keep;
+  }
   function canPost() { return CAN_SEND && !!(window.MAP && window.MAP.post && window.MAP.post.can); }
   function postPicked() {
     var ids = Object.keys(fpick).map(Number);

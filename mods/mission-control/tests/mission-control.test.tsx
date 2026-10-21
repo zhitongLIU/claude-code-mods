@@ -501,6 +501,7 @@ describe('mission-control', () => {
     expect(parseLine('{"post":[]}')).toBeUndefined()
     expect(SERVER).toContain("name === 'post'")
     expect(TEMPLATE).toContain("fetch('post'")
+    expect(TEMPLATE).toContain('id="flist"') // one checkbox per finding, in a list and under each line
     expect(prRef('https://github.com/TheMenu/benefits-gift-fr/pull/5671')).toEqual({ repo: 'TheMenu/benefits-gift-fr', number: '5671' })
     expect(prRef('https://evil.test/a/b/pull/1')).toBeUndefined()
     const review = reviewPayload([got[0] as any, { file: '/x/y.rb', summary: 'whole file' }], 'a'.repeat(40))
