@@ -71,9 +71,10 @@ export const TEMPLATE = `<!doctype html>
   footer b { font-weight: 400; font-size: 11.5px; color: var(--faint); margin-right: 4px; }
   .chip { padding: 3px 11px; border: 1px solid var(--line); border-radius: 12px; background: #141820; font-size: 12px; color: var(--dim); }
   .card.diffable:hover { border-color: #6b7a96; }
-  .reset { position: absolute; top: -8px; right: -8px; width: 20px; height: 20px; padding: 0; border: 1px solid #3a4a6a; border-radius: 50%; background: #26324a; color: var(--text); font-size: 12px; line-height: 1; cursor: pointer; opacity: .85; }
+  .reset { position: absolute; top: -11px; right: -11px; width: 26px; height: 26px; padding: 0; border: 1px solid #3a4a6a; border-radius: 50%; background: #26324a; color: var(--text); font-size: 15px; line-height: 1; cursor: pointer; opacity: .85; }
   .reset:hover { opacity: 1; background: #3a4a6a; }
   .card.open { outline: 2px solid #5aa9ff; outline-offset: 2px; }
+  .card.focus { border-color: var(--changed); box-shadow: 0 0 26px rgba(61,220,132,.55); }
   .tab.go { background: #1d5fd1; border-color: #3b82f6; color: #fff; }
   #drawer { flex: none; height: 45vh; display: flex; flex-direction: column; border-top: 1px solid #3a4a6a; background: #10141b;
     box-shadow: 0 -12px 32px rgba(0,0,0,.55); animation: rise .18s ease-out; }
@@ -187,6 +188,11 @@ export const TEMPLATE = `<!doctype html>
     };
     el.appendChild(b);
   }
+  var focusId = null; // the box whose links are the only ones drawn, set by double-clicking it
+  function setFocus(id) {
+    focusId = id;
+    render(window.MAP);
+  }
   var clickTimer = null; // a click on a changed box waits to see whether it is the first half of a double-click
   // The tab in the hash, else the one used last on this page.
   var TABKEY = 'mission-tab:' + location.pathname;
@@ -278,7 +284,14 @@ export const TEMPLATE = `<!doctype html>
       drop.onclick = function () { pending = []; savePending(); render(window.MAP); renderDrawer(); };
       head.appendChild(drop);
     }
-    if (tab() === 'code') head.appendChild(h('span', 'hint', 'scroll zooms \u00b7 drag the map or a box \u00b7 click a changed box for its diff \u00b7 double-click: fit / reset box'));
+    if (focusId && !M.groups.some(function (g) { return g.columns.some(function (col) { return col.some(function (c) { return c.id === focusId; }); }); })) focusId = null;
+    if (focusId && tab() === 'code') {
+      var xf = h('button', 'tab go', 'Exit focus (Esc)');
+      xf.title = 'Show every link again';
+      xf.onclick = function () { setFocus(null); };
+      head.appendChild(xf);
+    }
+    if (tab() === 'code') head.appendChild(h('span', 'hint', 'scroll zooms \u00b7 drag the map or a box \u00b7 click a changed box for its diff \u00b7 double-click a box: focus its links \u00b7 double-click the map: fit \u00b7 \u21ba puts a box back'));
     if (M.now) {
       var now = h('span', 'now', M.now);
       now.style.color = M.nowState === 'read' ? 'var(--read)' : 'var(--edit)';
@@ -315,7 +328,7 @@ export const TEMPLATE = `<!doctype html>
       g.columns.forEach(function (col) {
         var colEl = h('div', 'col');
         col.forEach(function (c) {
-          var el = h('div', 'card' + (c.live ? ' live' : '') + (c.state ? ' ' + c.state : '') + (c.flags ? ' flagged' : '') + (hasDiff(M, c.id) ? ' diffable' : '') + (openPath === c.id ? ' open' : ''));
+          var el = h('div', 'card' + (c.live ? ' live' : '') + (c.state ? ' ' + c.state : '') + (c.flags ? ' flagged' : '') + (hasDiff(M, c.id) ? ' diffable' : '') + (openPath === c.id ? ' open' : '') + (focusId === c.id ? ' focus' : ''));
           if (hasDiff(M, c.id)) el.title = 'Click for the diff';
           var name = h('div', 'name', c.title);
           var badge = c.live ? (c.state === 'edit' ? '\\u270e' : '\\u25cf') : c.state === 'changed' ? '\\u2713' : '';
@@ -368,6 +381,7 @@ export const TEMPLATE = `<!doctype html>
     }
     model.edges.forEach(function (e) {
       if (!cards[e.from] || !cards[e.to]) return;
+      if (focusId && e.from !== focusId && e.to !== focusId) return;
       var a = box(e.from), b = box(e.to), d;
       var x1 = a.x + a.w, y1 = a.y + Math.min(a.h / 2, 26), x2 = b.x - 4, y2 = b.y + Math.min(b.h / 2, 26);
       if (b.col - a.col > 1 && x2 > x1 + 8 && !pos[e.from] && !pos[e.to]) {
@@ -431,11 +445,7 @@ export const TEMPLATE = `<!doctype html>
     el.addEventListener('dblclick', function (e) {
       e.stopPropagation();
       if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; } // a double-click is not a click
-      delete pos[id];
-      savePos();
-      place(el, id);
-      putBack(el, id);
-      drawEdges();
+      setFocus(focusId === id ? null : id);
     });
   }
 
@@ -765,7 +775,7 @@ export const TEMPLATE = `<!doctype html>
       if (e.key === 'Escape') { sel = null; draftText = ''; renderDrawer(); }
       return;
     }
-    if (e.key === 'Escape') closeDrawer();
+    if (e.key === 'Escape') { if (focusId) setFocus(null); else closeDrawer(); }
     if (e.key === 'w') { location.hash = 'who'; render(window.MAP); }
     if (e.key === 'c') { location.hash = 'code'; render(window.MAP); }
     if (e.key === '0' || e.key === 'f') { view.auto = true; render(window.MAP); }
