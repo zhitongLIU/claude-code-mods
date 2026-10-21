@@ -14,7 +14,7 @@ export const TEMPLATE = `<!doctype html>
 <title>Mission Control</title>
 <style>
   :root { --bg:#0d1015; --card:#151922; --card-live:#1b2130; --line:#2a3140; --text:#e8ebf2; --dim:#7d8698; --faint:#4b5263;
-          --edge:#3a4252; --edge-hot:#6b7a96; --read:#5aa9ff; --edit:#ffa24c; --changed:#3ddc84; }
+          --edge:#3a4252; --edge-hot:#6b7a96; --read:#5aa9ff; --edit:#ffa24c; --changed:#3ddc84; --flag:#ff5fa8; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
     font: 14px -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif; }
@@ -58,6 +58,10 @@ export const TEMPLATE = `<!doctype html>
   .card.edit { border-color: var(--edit); box-shadow: 0 0 22px rgba(255,162,76,.35); }
   .card.changed::before, .card.read::before, .card.edit::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3.5px; border-radius: 2px; background: var(--accent); }
   .card.read { --accent: var(--read); } .card.edit { --accent: var(--edit); } .card.changed { --accent: var(--changed); }
+  .card.flagged { border-color: var(--flag); box-shadow: 0 0 22px rgba(255,95,168,.35); background: #20141d; --accent: var(--flag); }
+  .card.flagged::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3.5px; border-radius: 2px; background: var(--flag); }
+  .badge.flag { color: var(--flag); font-weight: 650; margin-left: 8px; }
+  .pill.flag { color: var(--flag); border-color: var(--flag); }
   .name { display: flex; justify-content: space-between; gap: 12px; font-weight: 650; font-size: 14.5px; white-space: nowrap; }
   .badge { color: var(--accent); font-weight: 400; font-size: 13px; }
   .sub { margin-top: 2px; font: 11px 'SF Mono', Menlo, monospace; color: var(--faint); white-space: nowrap; }
@@ -106,6 +110,34 @@ export const TEMPLATE = `<!doctype html>
   .note { display: flex; gap: 10px; align-items: flex-start; white-space: pre-wrap; }
   .note span { flex: 1; overflow-wrap: anywhere; }
   .note.sent { opacity: .6; }
+  .finding { display: flex; gap: 10px; align-items: flex-start; margin: 6px 16px 8px 68px; padding: 8px 12px; border: 1px solid var(--flag); border-radius: 8px; background: #26121d; font: 13px -apple-system, sans-serif; width: min(640px, calc(100% - 100px)); white-space: normal; }
+  .finding input.fsw { margin-top: 0; }
+  .finding .fbody { flex: 1; overflow-wrap: anywhere; } .finding b { color: #ffb3d6; }
+  .finding .fsc { margin-top: 4px; color: #c9a3b6; line-height: 18px; }
+  .finding.posted { opacity: .55; }
+  #flist { position: fixed; right: 16px; top: 64px; width: 400px; max-width: calc(100% - 32px); max-height: 60vh; overflow: auto; z-index: 8; border: 1px solid var(--flag); border-radius: 10px; background: #1a0f17; box-shadow: 0 12px 32px rgba(0,0,0,.55); font: 13px -apple-system, sans-serif; }
+  #flist[hidden] { display: none; }
+  #flist .fl-head { position: sticky; top: 0; display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #1a0f17; border-bottom: 1px solid #4a2438; }
+  #flist .fl-head b { flex: 1; color: #ffb3d6; }
+  #flist .fl-file { padding: 8px 12px 2px; font: 11.5px 'SF Mono', Menlo, monospace; color: var(--dim); }
+  #flist label { display: flex; gap: 8px; align-items: flex-start; padding: 5px 12px; cursor: pointer; line-height: 18px; }
+  #flist label:hover { background: #26121d; }
+  #flist label.posted { opacity: .5; cursor: default; }
+  #flist .fl-line { flex: none; color: var(--flag); font: 11.5px 'SF Mono', Menlo, monospace; min-width: 34px; }
+  #flist .fl-open { border: 0; background: none; color: var(--dim); cursor: pointer; font-size: 12px; }
+  .pill.flag { cursor: pointer; }
+  input.fsw { appearance: none; -webkit-appearance: none; flex: none; position: relative; width: 40px; height: 22px; margin: 0; border-radius: 11px; background: #3a2a34; border: 1px solid #5a3a4c; cursor: pointer; transition: background .15s; }
+  input.fsw::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #c9a3b6; transition: transform .15s, background .15s; }
+  input.fsw:checked { background: var(--flag); border-color: var(--flag); }
+  input.fsw:checked::after { transform: translateX(18px); background: #fff; }
+  input.fsw:disabled { opacity: .4; cursor: default; }
+  .finding { cursor: pointer; } .finding.posted { cursor: default; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+  .segb { padding: 5px 14px; border: 0; background: #151b27; color: var(--dim); font-size: 13px; cursor: pointer; }
+  .segb.on { background: var(--flag); color: #fff; font-weight: 650; }
+  .segb:disabled { opacity: .4; cursor: default; }
+  .swall { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: #151b27; color: var(--text); font-size: 13px; cursor: pointer; user-select: none; }
+  .swall:hover { border-color: var(--flag); }
   .note button { border: 0; background: none; color: var(--faint); cursor: pointer; }
   .editor textarea { display: block; width: 100%; min-height: 58px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #0d1015; color: var(--text); font: 13px -apple-system, sans-serif; resize: vertical; }
   .editor .btns { display: flex; gap: 8px; margin-top: 8px; }
@@ -116,6 +148,7 @@ export const TEMPLATE = `<!doctype html>
 <div id="stage"><div id="graph"><svg id="edges"></svg><div class="cols" id="cols"></div></div><div id="legend"><svg width="30" height="8"><line x1="1" y1="4" x2="22" y2="4" stroke="#6b7a96" stroke-width="1.5"/><path d="M21,0.5L29,4L21,7.5z" fill="#6b7a96"/></svg>A → B: B uses A (a change in A reaches B)</div></div>
 <footer id="foot"></footer>
 <div id="drawer" hidden></div>
+<div id="flist" hidden></div>
 <script src="hljs.js"></script>
 <script src="data.js"></script>
 <script>
@@ -191,6 +224,43 @@ export const TEMPLATE = `<!doctype html>
     head.appendChild(h('span', 'pill', S.agents + ' agents (' + S.running + ' running) \u00b7 ' + S.tools + ' tool calls' + (S.failed ? ' \u00b7 ' + S.failed + ' failed' : '')));
     head.appendChild(h('span', 'pill', M.files + ' files'));
     head.appendChild(h('span', 'pill' + (M.changed ? ' on' : ''), M.changed + ' changed'));
+    var FL = M.findings || {}, fAll = [];
+    Object.keys(FL).forEach(function (p) { FL[p].forEach(function (f) { fAll.push(f); }); });
+    if (fAll.length) {
+      var fp = h('span', 'pill flag', '\\u2691 ' + fAll.length + ' finding' + (fAll.length === 1 ? '' : 's') + (showList ? ' \\u25b4' : ' \\u25be'));
+      fp.title = 'Show every finding, to pick them one by one';
+      fp.onclick = function () { showList = !showList; render(window.MAP); };
+      head.appendChild(fp);
+    }
+    var openF = fAll.filter(function (f) { return !f.posted; });
+    if (openF.length) {
+      var npicked = Object.keys(fpick).length;
+      var all = h('label', 'swall'), sw = document.createElement('input');
+      sw.type = 'checkbox'; sw.className = 'fsw'; sw.checked = npicked === openF.length;
+      sw.onchange = function () { fpick = {}; if (sw.checked) openF.forEach(function (f) { fpick[f.id] = true; }); render(window.MAP); renderDrawer(); };
+      all.appendChild(sw);
+      all.appendChild(h('span', '', npicked && npicked < openF.length ? npicked + ' of ' + openF.length + ' picked' : 'All findings (' + openF.length + ')'));
+      all.title = 'Pick or drop every finding that is not pushed yet; switch them one by one in the list or under their line';
+      head.appendChild(all);
+    }
+    if (Object.keys(fpick).length) {
+      var nPick = Object.keys(fpick).length, toPr = canPost() && dest !== 'claude';
+      // Where the picked findings go: the pull request (when the page is about one) or the Claude session.
+      var seg = h('span', 'seg');
+      [['pr', 'PR'], ['claude', 'Claude']].forEach(function (d) {
+        var on = (d[0] === 'pr') === toPr, b = h('button', 'segb' + (on ? ' on' : ''), d[1]);
+        if (d[0] === 'pr' && !canPost()) { b.disabled = true; b.title = 'Needs the local server and a page about a pull request (/mission <PR link>)'; }
+        b.onclick = function () { dest = d[0]; render(window.MAP); };
+        seg.appendChild(b);
+      });
+      head.appendChild(seg);
+      var go = h('button', 'tab go', toPr ? 'Send to PR (' + nPick + ')' : (CAN_SEND ? 'Send to Claude (' : 'Copy for Claude (') + nPick + ')');
+      go.title = toPr ? 'Push the picked findings to the pull request as one review of comments' : 'Hand the picked findings to the Claude session as a request to fix them';
+      go.onclick = toPr ? postPicked : sendPicked;
+      head.appendChild(go);
+    }
+    if (M.post && M.post.note) head.appendChild(h('span', 'pill', M.post.note));
+    renderList(M);
     if (pending.length) {
       var fresh = pending.filter(function (c) { return !c.sent; }).length;
       if (fresh) {
@@ -245,11 +315,12 @@ export const TEMPLATE = `<!doctype html>
       g.columns.forEach(function (col) {
         var colEl = h('div', 'col');
         col.forEach(function (c) {
-          var el = h('div', 'card' + (c.live ? ' live' : '') + (c.state ? ' ' + c.state : '') + (hasDiff(M, c.id) ? ' diffable' : '') + (openPath === c.id ? ' open' : ''));
+          var el = h('div', 'card' + (c.live ? ' live' : '') + (c.state ? ' ' + c.state : '') + (c.flags ? ' flagged' : '') + (hasDiff(M, c.id) ? ' diffable' : '') + (openPath === c.id ? ' open' : ''));
           if (hasDiff(M, c.id)) el.title = 'Click for the diff';
           var name = h('div', 'name', c.title);
           var badge = c.live ? (c.state === 'edit' ? '\\u270e' : '\\u25cf') : c.state === 'changed' ? '\\u2713' : '';
           if (badge) name.appendChild(h('span', 'badge', badge));
+          if (c.flags) { var fb = h('span', 'badge flag', '\\u2691 ' + c.flags); fb.title = c.flags + ' review finding' + (c.flags === 1 ? '' : 's') + ' on this file'; name.appendChild(fb); }
           el.appendChild(name);
           el.appendChild(h('div', 'sub', c.sub));
           if (c.why) el.appendChild(h('div', 'why', c.why));
@@ -501,6 +572,81 @@ export const TEMPLATE = `<!doctype html>
   }
   window.addEventListener('mouseup', function () { if (selDrag) { selDrag = false; renderDrawer(); } });
   function diffOf(path) { return window.DIFFS && window.DIFFS[path]; }
+  // Review findings: the reviewer picks the ones to push to the pull request. Only ids go back; the mod posts what it holds.
+  var fpick = {}, showList = false, dest = 'pr';
+  // Every finding in one panel, one checkbox each, so none needs its file opened to be picked or dropped.
+  function renderList(M) {
+    var el = document.getElementById('flist'), keep = el.scrollTop, FL = M.findings || {}, paths = Object.keys(FL);
+    el.textContent = '';
+    el.hidden = !showList || !paths.length || tab() !== 'code';
+    if (el.hidden) return;
+    var head = h('div', 'fl-head'), n = Object.keys(fpick).length;
+    head.appendChild(h('b', '', n ? n + ' picked' : 'Pick findings to post'));
+    var x = h('button', 'fl-open', '\\u00d7'); x.title = 'Close the list';
+    x.onclick = function () { showList = false; render(window.MAP); };
+    head.appendChild(x);
+    el.appendChild(head);
+    paths.forEach(function (p) {
+      var file = h('div', 'fl-file', p.split('/').slice(-2).join('/'));
+      file.title = p;
+      el.appendChild(file);
+      FL[p].forEach(function (f) {
+        var row = h('label', f.posted ? 'posted' : ''), box = document.createElement('input');
+        box.type = 'checkbox'; box.className = 'fsw'; box.checked = !!fpick[f.id]; box.disabled = !!f.posted;
+        box.onchange = function () { if (box.checked) fpick[f.id] = true; else delete fpick[f.id]; render(window.MAP); renderDrawer(); };
+        row.appendChild(box);
+        row.appendChild(h('span', 'fl-line', f.line ? 'L' + f.line : 'file'));
+        row.appendChild(h('span', '', (f.posted ? '\\u2713 ' : '') + f.summary));
+        var go = h('button', 'fl-open', '\\u2197'); go.title = 'Open the diff at this finding';
+        go.onclick = function (e) { e.preventDefault(); if (openPath !== p) toggleDrawer(p); else renderDrawer(); };
+        row.appendChild(go);
+        el.appendChild(row);
+      });
+    });
+    el.scrollTop = keep;
+  }
+  function canPost() { return CAN_SEND && !!(window.MAP && window.MAP.post && window.MAP.post.can); }
+  function pickedFindings() {
+    var FL = (window.MAP && window.MAP.findings) || {}, out = [];
+    Object.keys(FL).forEach(function (p) { FL[p].forEach(function (f) { if (fpick[f.id]) out.push(f); }); });
+    return out;
+  }
+  // The picked findings as a request to Claude; deliver() sends it to the session, or copies it where there is no server.
+  function sendPicked() {
+    var list = pickedFindings();
+    if (!list.length) return;
+    var where = window.MAP && window.MAP.where, lines = ['Fix these ' + list.length + ' code review finding' + (list.length === 1 ? '' : 's') + (where && where.branch ? ' (branch ' + where.branch + ')' : '') + '. Check each against the code before changing it, and say if one is wrong:', ''];
+    list.forEach(function (f, i) {
+      lines.push((i + 1) + '. ' + f.file + (f.line ? ':' + f.line : '') + (f.severity ? ' [' + f.severity + ']' : '') + ' - ' + f.summary);
+      if (f.scenario) lines.push('   ' + f.scenario);
+    });
+    deliver(lines.join('\\n'), function (sent) {
+      toast(sent ? 'Sent ' + list.length + ' finding' + (list.length === 1 ? '' : 's') + ' to Claude.' : 'Copied ' + list.length + '. Paste into Claude.');
+      fpick = {}; render(window.MAP); renderDrawer();
+    });
+  }
+  function postPicked() {
+    var ids = Object.keys(fpick).map(Number);
+    if (!ids.length) return;
+    if (!confirm('Post ' + ids.length + ' comment' + (ids.length === 1 ? '' : 's') + ' to the pull request as one review?')) return;
+    fetch('post', { method: 'POST', body: JSON.stringify({ ids: ids }) }).then(function (r) {
+      if (r.ok) { fpick = {}; toast('Posting to the pull request\\u2026'); render(window.MAP); renderDrawer(); } else toast('Could not send the request');
+    }, function () { toast('Could not send the request'); });
+  }
+  function findingEl(f) {
+    var el = h('div', 'finding' + (f.posted ? ' posted' : ''));
+    var box = document.createElement('input');
+    box.type = 'checkbox'; box.className = 'fsw'; box.checked = !!fpick[f.id]; box.disabled = !!f.posted;
+    box.title = f.posted ? 'Already on the pull request' : 'Pick to send to Claude' + (canPost() ? ' or post to the pull request' : '');
+    box.onchange = function () { if (box.checked) fpick[f.id] = true; else delete fpick[f.id]; render(window.MAP); renderDrawer(); };
+    var body = h('div', 'fbody');
+    body.appendChild(h('b', '', (f.severity ? f.severity + ' \\u00b7 ' : '') + f.summary));
+    if (f.scenario) body.appendChild(h('div', 'fsc', f.scenario));
+    if (f.posted) body.appendChild(h('div', 'fsc', '\\u2713 pushed to the pull request'));
+    el.appendChild(box); el.appendChild(body);
+    el.onclick = function (e) { if (e.target !== box && !box.disabled) box.click(); }; // the whole card is the target, not just the switch
+    return el;
+  }
   function sameRow(a, b) { return a.k === b.k && a.o === b.o && a.n === b.n; }
   function renderDrawer() {
     var el = document.getElementById('drawer');
@@ -538,6 +684,13 @@ export const TEMPLATE = `<!doctype html>
       if (at < 0) at = rowsNow.length - 1; // its lines moved on: it still shows, at the end
       (anchor[at] = anchor[at] || []).push(c);
     });
+    var fAnchor = {};
+    ((window.MAP && window.MAP.findings && window.MAP.findings[openPath]) || []).forEach(function (f) {
+      var at = -1;
+      if (f.line) rowsNow.forEach(function (r, i) { if (r.k !== 'h' && r.k !== 'd' && r.n === f.line) at = i; });
+      if (at < 0) body.appendChild(findingEl(f)); // no line, or not in this diff: on the file
+      else (fAnchor[at] = fAnchor[at] || []).push(f);
+    });
     rowsNow.forEach(function (r, i) {
       if (r.k === 'h') { body.appendChild(h('div', 'row hunk', r.t)); return; }
       var row = h('div', 'row k-' + r.k + (i >= lo && i <= hi ? ' sel' : ''));
@@ -562,6 +715,7 @@ export const TEMPLATE = `<!doctype html>
       else highlight(r.t, ext).forEach(function (t) { code.appendChild(t[0] ? h('span', 't-' + t[0], t[1]) : document.createTextNode(t[1])); });
       row.appendChild(code);
       body.appendChild(row);
+      (fAnchor[i] || []).forEach(function (f) { body.appendChild(findingEl(f)); });
       (anchor[i] || []).forEach(function (c) {
         var late = !c.sent && changedSince(c);
         var note = h('div', 'note' + (c.sent ? ' sent' : ''));
@@ -600,7 +754,7 @@ export const TEMPLATE = `<!doctype html>
     document.head.appendChild(s);
   }
 
-  var last = JSON.stringify(window.MAP);
+  var last = JSON.stringify(window.MAP), lastF = JSON.stringify(window.MAP && window.MAP.findings);
   render(window.MAP);
   syncDiffs();
   window.addEventListener('resize', function () { render(window.MAP); });
@@ -623,7 +777,7 @@ export const TEMPLATE = `<!doctype html>
       s.src = 'data.js?t=' + Date.now();
       s.onload = function () {
         var now = JSON.stringify(window.MAP);
-        if (now !== last) { last = now; syncDiffs(); if (dragging) stale = true; else render(window.MAP); }
+        if (now !== last) { last = now; syncDiffs(); if (dragging) stale = true; else render(window.MAP); var fnow = JSON.stringify(window.MAP && window.MAP.findings); if (fnow !== lastF) { lastF = fnow; if (!selDrag) renderDrawer(); } }
         s.remove();
       };
       s.onerror = function () { s.remove(); };

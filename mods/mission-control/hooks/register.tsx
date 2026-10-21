@@ -6,10 +6,11 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { MapFile, MissionNode, MissionWhere } from '../types'
+import type { Finding, MapFile, MissionNode, MissionWhere } from '../types'
 import { linksOf } from './lang'
 import { SERVER, parseLine, portFor, splitLines } from './bridge'
 import { addedDiff } from './diff'
+import { byPath, merge, normalize, parseFindings, prRef, reviewPayload, splitByDiff } from './findings'
 import { HLJS } from './vendor-hljs'
 import { mapData } from './map'
 import { TEMPLATE } from './template'
@@ -34,10 +35,11 @@ const files = atom({ plugin: 'mission', key: 'files' } as const, [] as MapFile[]
 const turn = atom({ plugin: 'mission', key: 'turn' } as const, 0)
 const diffs = atom({ plugin: 'mission', key: 'diffs' } as const, {} as Record<string, { text: string; ref?: string }>) // a changed file's diff, for the page's drawer
 const where = atom({ plugin: 'mission', key: 'where' } as const, { branch: '' } as MissionWhere) // the branch and pull request the page is about
+const findings = atom({ plugin: 'mission', key: 'findings' } as const, [] as Finding[]) // an AI review's findings, pink on the map; their index is their id
 const sid = atom({ plugin: 'mission', key: 'sid' } as const, '') // this session's folder name, so sessions never share a page
 
 // The web page's bookkeeping; a reload starts it over. `on` once /mission has opened the page.
-const page = { on: false, pending: false, dirty: false, last: '', lastDiffs: '', written: false }
+const page = { on: false, pending: false, dirty: false, last: '', lastDiffs: '', written: false, posting: false, note: '' } // note: what the last push to the pull request came to
 // The edits awaiting their one-line "why" live on the files atom (MapFile.edits), so a reload keeps
 // them; the "why" is asked for lazily: no model call while nobody watches.
 const asking = new Set<string>()
@@ -65,7 +67,33 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     await update($, sid, () => String((r as { sessionId?: string }).sessionId ?? Math.random().toString(36).slice(2, 10)).replace(/[^\w-]/g, ''))
-    await $.command.register({ name: 'mission', description: 'Open the live web page of agents, tool calls and the code map; give a base, PR link or #123 to put what changed on the map first; off stops it', argumentHint: '[base | PR link | #123 | off]' }).catch(() => {})
+    await $.command.register({ name: 'mission', description: 'Open the live web page of agents, tool calls and the code map; give a base, PR link or #123 to put what changed on the map first; off stops it', argumentHint: '[base | PR link | #123 | findings <file> | off]' }).catch(() => {})
+    await $.tool.register({
+      name: 'findings',
+      description: 'Puts the findings of a code review on the Mission Control code map: each file with a finding turns pink and the finding shows under its line in the diff. Call it with the findings of any review, whoever wrote it. `add: true` keeps the findings already shown.',
+      isDeferred: false,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          findings: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                file: { type: 'string', description: 'Repo-relative path' },
+                line: { type: 'integer', description: '1-indexed line in the new version of the file; leave out for a finding on the whole file' },
+                summary: { type: 'string', description: 'One sentence: the defect' },
+                scenario: { type: 'string', description: 'Concrete inputs or state, then the wrong result' },
+                severity: { type: 'string', description: 'e.g. high, medium, low, or a category' },
+              },
+              required: ['file', 'summary'],
+            },
+          },
+          add: { type: 'boolean', description: 'Keep the findings already on the page instead of replacing them' },
+        },
+        required: ['findings'],
+      },
+    }).catch(() => {})
     $.clock.every(1000, () => {
       void (async () => {
         const busy = (await read($, nodes)).some(n => n.status === 'running')
@@ -99,6 +127,23 @@ export const register: Register = on => {
       await update($, nodes, list => cap([...list, agent]))
       await publish($)
     }
+    return r
+  })
+
+  // The findings tool, served here: the model hands over a review's findings and the page shows them.
+  on('tool.call', { tool: 'mcp__mission__findings' }, async ($, e) => {
+    const input = e as unknown as { findings?: unknown; add?: unknown }
+    const got = normalize(input.findings)
+    if (got.length === 0) return { result: 'No findings were given: each needs a file and a summary.' }
+    const n = await setFindings($, got, input.add === true)
+    return { result: `${got.length} findings on the Mission Control map (${n.onMap} on files shown there${n.off ? `, ${n.off} on files not on the map` : ''}). /mission opens the page.` }
+  })
+
+  // /code-review reports through ReportFindings: they go on the map without a word from the model.
+  on('tool.call', { tool: 'ReportFindings' }, async ($, e, next) => {
+    const r = await next(e)
+    const got = normalize((e as unknown as { findings?: unknown }).findings)
+    if (r.deny === undefined && r.isError !== true && got.length) await setFindings($, got, false).catch(() => {})
     return r
   })
 
@@ -194,6 +239,8 @@ async function run($: EngineInterface, args: string) {
     bridge.starting = undefined
     return { text: 'Mission Control: page stopped. /mission opens it again.' }
   }
+  const fcmd = /^findings(?:\s+(.*))?$/i.exec(arg)
+  if (fcmd) return loadFindings($, (fcmd[1] ?? '').trim())
   let note = ''
   let here: MissionWhere
   if (arg) {
@@ -451,6 +498,79 @@ async function publish($: EngineInterface) {
   })
 }
 
+// Puts a review's findings on the page; how many sit on files the map shows.
+async function setFindings($: EngineInterface, got: Finding[], add: boolean) {
+  await update($, findings, old => merge(old, got, add))
+  page.note = ''
+  const all = await read($, findings)
+  const { matched, unmatched } = byPath(all, (await read($, files)).map(f => f.path))
+  await publish($)
+  return { onMap: all.length - unmatched, off: unmatched, files: Object.keys(matched).length }
+}
+
+// /mission findings <file>: findings from a JSON file; `clear` takes them off; with nothing, says what is shown.
+async function loadFindings($: EngineInterface, arg: string) {
+  if (arg === 'clear') {
+    await update($, findings, () => [])
+    await publish($)
+    return { text: 'Mission Control: findings cleared.' }
+  }
+  if (!arg) return { text: `Mission Control: ${(await read($, findings)).length} findings on the page. /mission findings <file.json> loads more; /mission findings clear removes them.` }
+  const add = /(^|\s)--add$/.test(arg)
+  const path = arg.replace(/\s*--add$/, '')
+  const raw = await $.fs.read(path).catch(() => undefined)
+  if (typeof raw !== 'string') return { text: `Mission Control: could not read ${path}.` }
+  const got = parseFindings(raw)
+  if (got.length === 0) return { text: `Mission Control: no findings in ${path}: expected a JSON array of { file, line?, summary, scenario? }.` }
+  const n = await setFindings($, got, add)
+  return { text: `Mission Control: ${got.length} findings loaded, ${n.onMap} on files the map shows${n.off ? `, ${n.off} on files that are not on it` : ''}. /mission opens the page.` }
+}
+
+// Pushes the findings the reviewer picked on the page to the pull request as one review of comments.
+// The page sends ids only: what is posted is what is held here.
+async function postFindings($: EngineInterface, ids: number[]) {
+  if (page.posting) return
+  page.posting = true
+  try {
+    const all = await read($, findings)
+    const chosen = [...new Set(ids)].flatMap(i => (all[i] && !all[i].posted ? [{ i, f: all[i] }] : []))
+    const pr = prRef((await read($, where)).pr?.url)
+    if (!pr) page.note = 'Could not post: this page is not about a pull request.'
+    else if (chosen.length === 0) page.note = 'Nothing to post: those findings were already pushed.'
+    else {
+      const gh = async (argv: string[]) => $.process.run(['gh', ...argv], { timeoutMs: 30_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
+      const sha = (await gh(['api', `repos/${pr.repo}/pulls/${pr.number}`, '--jq', '.head.sha'])).stdout.trim()
+      if (!/^[0-9a-f]{40}$/.test(sha)) page.note = `Could not post: gh could not read ${pr.repo} #${pr.number} (is gh signed in?).`
+      else {
+        // A comment on a line outside the diff makes GitHub refuse the whole review: those go in the review's text.
+        const listed = await gh(['api', `repos/${pr.repo}/pulls/${pr.number}/files?per_page=100`, '--paginate', '--jq', '.[] | {filename, patch}'])
+        const patches: Record<string, string> = {}
+        for (const line of listed.stdout.split('\n')) {
+          try {
+            const f = JSON.parse(line) as { filename?: unknown; patch?: unknown }
+            if (typeof f.filename === 'string') patches[f.filename] = typeof f.patch === 'string' ? f.patch : ''
+          } catch {}
+        }
+        const { inline, rest } = splitByDiff(chosen.map(c => c.f), patches)
+        const file = `${await pageDir($)}/review.json`
+        await $.fs.write(file, JSON.stringify(reviewPayload(inline, rest, sha)))
+        const r = (await $.process.run(['gh', 'api', '-X', 'POST', `repos/${pr.repo}/pulls/${pr.number}/reviews`, '--input', file], { timeoutMs: 30_000 }).catch(() => ({ exitCode: 1, stdout: '', stderr: '' }))) as { exitCode: number; stdout: string; stderr?: string }
+        if (r.exitCode === 0) {
+          const done = new Set(chosen.map(c => c.i))
+          await update($, findings, old => old.map((f, i) => (done.has(i) ? { ...f, posted: true } : f)))
+          page.note = `Posted ${chosen.length} finding${chosen.length === 1 ? '' : 's'} to ${pr.repo} #${pr.number}${rest.length ? ` (${rest.length} in the review text: not on a line of the diff)` : ''}.`
+        } else {
+          const why = `${r.stderr ?? ''} ${r.stdout}`.replace(/\s+/g, ' ').trim().slice(0, 160)
+          page.note = `Could not post, nothing was posted: ${why || 'GitHub refused the review (no permission?)'}`
+        }
+      }
+    }
+  } finally {
+    page.posting = false
+    await publish($)
+  }
+}
+
 async function pageDir($: EngineInterface) {
   const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')
   return `${tmp}/mission-control/${(await read($, sid)) || 'session'}`
@@ -461,8 +581,12 @@ async function writePage($: EngineInterface) {
   const dir = await pageDir($)
   const at = Date.now()
   const list = await read($, nodes)
+  const all0 = await read($, findings)
+  const { matched } = byPath(all0, (await read($, files)).map(f => f.path))
+  const flagged = Object.fromEntries(Object.entries(matched).map(([p, fs]) => [p, fs.filter(f => !f.posted).length || fs.length]))
+  const shown = Object.fromEntries(Object.entries(matched).map(([p, fs]) => [p, fs.map(f => ({ id: all0.indexOf(f), file: f.file, line: f.line, summary: f.summary, scenario: f.scenario, severity: f.severity, posted: f.posted === true }))]))
   const data = {
-    ...mapData(await read($, files), { at, turn: await read($, turn) }),
+    ...mapData(await read($, files), { at, turn: await read($, turn) }, flagged),
     who: { summary: summary(list), lines: lines(list, at).map(l => ({ prefix: l.prefix, text: l.text, status: l.status, kind: l.node.kind })) },
   }
   // The diffs of the files on the map. The page loads diffs.js when `rev` changes, so data.js stays small.
@@ -471,7 +595,7 @@ async function writePage($: EngineInterface) {
   const diffJson = JSON.stringify(all).replace(/</g, '\\u003c')
   const rev = [...diffJson].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) | 0, 7)
   const here = await read($, where)
-  const json = JSON.stringify({ ...data, where: here.branch ? here : undefined, diffs: { rev, paths: Object.keys(all) } }).replace(/</g, '\\u003c')
+  const json = JSON.stringify({ ...data, where: here.branch ? here : undefined, findings: shown, post: { can: Boolean(prRef(here.pr?.url)), note: page.note }, diffs: { rev, paths: Object.keys(all) } }).replace(/</g, '\\u003c')
   if (json === page.last) return // nothing changed since the last write
   if (!page.written) {
     await $.fs.write(`${dir}/index.html`, TEMPLATE)
@@ -521,6 +645,7 @@ function startBridge($: EngineInterface): Promise<string | undefined> {
             bridge.base = `http://127.0.0.1:${msg.port}/${msg.token}`
             resolve(bridge.base)
           } else if (msg && 'send' in msg) void $.prompt.submit({ text: msg.send }).catch(() => {})
+          else if (msg && 'post' in msg) void postFindings($, msg.post).catch(() => {})
         }
       }
     })()
