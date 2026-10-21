@@ -10,7 +10,7 @@ import type { Finding, MapFile, MissionNode, MissionWhere } from '../types'
 import { linksOf } from './lang'
 import { SERVER, parseLine, portFor, splitLines } from './bridge'
 import { addedDiff } from './diff'
-import { byPath, merge, normalize, parseFindings, prRef, reviewPayload } from './findings'
+import { byPath, merge, normalize, parseFindings, prRef, reviewPayload, splitByDiff } from './findings'
 import { HLJS } from './vendor-hljs'
 import { mapData } from './map'
 import { TEMPLATE } from './template'
@@ -542,14 +542,27 @@ async function postFindings($: EngineInterface, ids: number[]) {
       const sha = (await gh(['api', `repos/${pr.repo}/pulls/${pr.number}`, '--jq', '.head.sha'])).stdout.trim()
       if (!/^[0-9a-f]{40}$/.test(sha)) page.note = `Could not post: gh could not read ${pr.repo} #${pr.number} (is gh signed in?).`
       else {
+        // A comment on a line outside the diff makes GitHub refuse the whole review: those go in the review's text.
+        const listed = await gh(['api', `repos/${pr.repo}/pulls/${pr.number}/files?per_page=100`, '--paginate', '--jq', '.[] | {filename, patch}'])
+        const patches: Record<string, string> = {}
+        for (const line of listed.stdout.split('\n')) {
+          try {
+            const f = JSON.parse(line) as { filename?: unknown; patch?: unknown }
+            if (typeof f.filename === 'string') patches[f.filename] = typeof f.patch === 'string' ? f.patch : ''
+          } catch {}
+        }
+        const { inline, rest } = splitByDiff(chosen.map(c => c.f), patches)
         const file = `${await pageDir($)}/review.json`
-        await $.fs.write(file, JSON.stringify(reviewPayload(chosen.map(c => c.f), sha)))
-        const r = await gh(['api', '-X', 'POST', `repos/${pr.repo}/pulls/${pr.number}/reviews`, '--input', file])
+        await $.fs.write(file, JSON.stringify(reviewPayload(inline, rest, sha)))
+        const r = (await $.process.run(['gh', 'api', '-X', 'POST', `repos/${pr.repo}/pulls/${pr.number}/reviews`, '--input', file], { timeoutMs: 30_000 }).catch(() => ({ exitCode: 1, stdout: '', stderr: '' }))) as { exitCode: number; stdout: string; stderr?: string }
         if (r.exitCode === 0) {
           const done = new Set(chosen.map(c => c.i))
           await update($, findings, old => old.map((f, i) => (done.has(i) ? { ...f, posted: true } : f)))
-          page.note = `Posted ${chosen.length} comment${chosen.length === 1 ? '' : 's'} to ${pr.repo} #${pr.number}.`
-        } else page.note = 'Could not post: GitHub refused the review (a line outside the diff, or no permission). Nothing was posted.'
+          page.note = `Posted ${chosen.length} finding${chosen.length === 1 ? '' : 's'} to ${pr.repo} #${pr.number}${rest.length ? ` (${rest.length} in the review text: not on a line of the diff)` : ''}.`
+        } else {
+          const why = `${r.stderr ?? ''} ${r.stdout}`.replace(/\s+/g, ' ').trim().slice(0, 160)
+          page.note = `Could not post, nothing was posted: ${why || 'GitHub refused the review (no permission?)'}`
+        }
       }
     }
   } finally {

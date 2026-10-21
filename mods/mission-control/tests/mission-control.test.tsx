@@ -3,7 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import { SERVER, parseLine, portFor, splitLines } from '../hooks/bridge'
 import { categoryOf } from '../hooks/category'
 import { addedDiff, formatComment, formatReview, parseDiff } from '../hooks/diff'
-import { byPath, matchPath, merge, normalize, parseFindings, prRef, reviewPayload } from '../hooks/findings'
+import { byPath, diffLines, matchPath, merge, normalize, parseFindings, prRef, reviewPayload, splitByDiff } from '../hooks/findings'
 import { highlight } from '../hooks/highlight'
 import { htmlRows, langOf } from '../hooks/hl'
 import { linksOf } from '../hooks/lang'
@@ -506,9 +506,16 @@ describe('mission-control', () => {
     expect(TEMPLATE).toContain('id="flist"') // one checkbox per finding, in a list and under each line
     expect(prRef('https://github.com/TheMenu/benefits-gift-fr/pull/5671')).toEqual({ repo: 'TheMenu/benefits-gift-fr', number: '5671' })
     expect(prRef('https://evil.test/a/b/pull/1')).toBeUndefined()
-    const review = reviewPayload([got[0] as any, { file: '/x/y.rb', summary: 'whole file' }], 'a'.repeat(40))
+    // GitHub refuses the whole review for one comment off the diff: those go in the review text.
+    const patch = '@@ -10,3 +10,4 @@\n ctx\n-old\n+new\n+more\n ctx2'
+    expect([...diffLines(patch)]).toEqual([10, 11, 12, 13])
+    const split = splitByDiff([got[0] as any, { file: 'a/b.rb', line: 99, summary: 'far' }, { file: 'a/b.rb', summary: 'whole file' }, { file: 'z.rb', line: 1, summary: 'not in the PR' }], { 'a/b.rb': '@@ -10,3 +10,4 @@\n x\n x\n+x\n x' })
+    expect(split.inline.map(f => f.line)).toEqual([12])
+    expect(split.rest.map(f => f.summary)).toEqual(['far', 'whole file', 'not in the PR'])
+    const review = reviewPayload(split.inline, split.rest, 'a'.repeat(40))
     expect(review.event).toBe('COMMENT')
-    expect(review.comments[0]).toEqual({ path: 'a/b.rb', body: '**correctness** · Race\n\nx then y', line: 12, side: 'RIGHT' })
-    expect(review.comments[1]).toEqual({ path: 'x/y.rb', body: 'whole file', subject_type: 'file' })
+    expect(review.comments).toEqual([{ path: 'a/b.rb', body: '**correctness** · Race\n\nx then y', line: 12, side: 'RIGHT' }])
+    expect(review.body).toContain('Not on a line of this diff:')
+    expect(review.body).toContain('`a/b.rb:99` far')
   })
 })

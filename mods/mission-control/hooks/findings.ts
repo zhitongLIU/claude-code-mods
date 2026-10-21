@@ -71,13 +71,56 @@ export function commentBody(f: Finding) {
   return `${f.severity ? `**${f.severity}** · ` : ''}${f.summary}${f.scenario ? `\n\n${f.scenario}` : ''}`
 }
 
-// The body of POST /repos/{repo}/pulls/{n}/reviews for the chosen findings, as one review of comments (nothing is approved
-// or rejected). A finding with a line is an inline comment on the new side of the file; one without is a comment on the file.
-export function reviewPayload(chosen: Finding[], sha: string) {
+// The new-side line numbers a unified patch shows: the added lines and the context around them. GitHub takes an inline
+// review comment on these lines only, and refuses the whole review when one comment is anywhere else.
+export function diffLines(patch: string): Set<number> {
+  const out = new Set<number>()
+  let at = 0
+  for (const row of patch.split('\n')) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row)
+    if (hunk) {
+      at = Number(hunk[1])
+    } else if (at > 0 && (row.startsWith('+') || row.startsWith(' ') || row === '')) {
+      if (row !== '') out.add(at)
+      at++
+    }
+  }
+  return out
+}
+
+const rel = (file: string) => file.replace(/^\.\//, '').replace(/^\/+/, '')
+
+// The findings that can be inline comments (their line is in the PR's diff) and the rest (no line, a line the diff does
+// not show, or a file the PR does not change), which go in the review's own text instead.
+export function splitByDiff(chosen: Finding[], patches: Record<string, string>) {
+  const cache = new Map<string, Set<number>>()
+  const inline: Finding[] = []
+  const rest: Finding[] = []
+  for (const f of chosen) {
+    const path = rel(f.file)
+    const patch = patches[path]
+    if (f.line && patch !== undefined) {
+      if (!cache.has(path)) cache.set(path, diffLines(patch))
+      if (cache.get(path)?.has(f.line)) {
+        inline.push(f)
+        continue
+      }
+    }
+    rest.push(f)
+  }
+  return { inline, rest }
+}
+
+// The body of POST /repos/{repo}/pulls/{n}/reviews, as one review of comments (nothing is approved or rejected).
+// Inline findings sit on their line of the new side; the rest are listed in the review text, with their line as written.
+export function reviewPayload(inline: Finding[], rest: Finding[], sha: string) {
+  const n = inline.length + rest.length
+  const where = (f: Finding) => `${rel(f.file)}${f.line ? `:${f.line}` : ''}`
+  const body = [`${n} finding${n === 1 ? '' : 's'} from an AI review, approved by the reviewer.`, ...(rest.length ? ['', 'Not on a line of this diff:', ...rest.map(f => `- \`${where(f)}\` ${commentBody(f).replace(/\n+/g, ' ')}`)] : [])].join('\n')
   return {
     commit_id: sha,
     event: 'COMMENT',
-    body: `${chosen.length} finding${chosen.length === 1 ? '' : 's'} from an AI review, approved by the reviewer.`,
-    comments: chosen.map(f => ({ path: f.file.replace(/^\.\//, '').replace(/^\/+/, ''), body: commentBody(f), ...(f.line ? { line: f.line, side: 'RIGHT' } : { subject_type: 'file' }) })),
+    body,
+    comments: inline.map(f => ({ path: rel(f.file), body: commentBody(f), line: f.line, side: 'RIGHT' })),
   }
 }
