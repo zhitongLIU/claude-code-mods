@@ -222,18 +222,26 @@ export const TEMPLATE = `<!doctype html>
       head.appendChild(fp);
     }
     var openF = fAll.filter(function (f) { return !f.posted; });
-    if (canPost() && openF.length) {
+    if (openF.length) {
       var npicked = Object.keys(fpick).length;
       var all = h('button', 'tab', npicked === 0 ? 'Select all findings' : npicked === openF.length ? 'Unselect all' : 'Select all (' + openF.length + ')');
-      all.title = 'Pick or drop every finding that is not on the pull request yet; tick them one by one in the list or under their line';
+      all.title = 'Pick or drop every finding that is not pushed yet; tick them one by one in the list or under their line';
       all.onclick = function () { var every = Object.keys(fpick).length === openF.length; fpick = {}; if (!every) openF.forEach(function (f) { fpick[f.id] = true; }); render(window.MAP); renderDrawer(); };
       head.appendChild(all);
     }
     if (Object.keys(fpick).length) {
-      var postBtn = h('button', 'tab go', 'Post to PR (' + Object.keys(fpick).length + ')');
-      postBtn.title = 'Push the picked findings to the pull request as one review of comments';
-      postBtn.onclick = postPicked;
-      head.appendChild(postBtn);
+      var nPick = Object.keys(fpick).length;
+      // Local code, a branch with no pull request: the picked findings go to the Claude session to be fixed.
+      var toClaude = h('button', 'tab' + (canPost() ? '' : ' go'), (CAN_SEND ? 'Send to Claude (' : 'Copy for Claude (') + nPick + ')');
+      toClaude.title = 'Hand the picked findings to the Claude session as a request to fix them';
+      toClaude.onclick = sendPicked;
+      head.appendChild(toClaude);
+      if (canPost()) {
+        var postBtn = h('button', 'tab go', 'Post to PR (' + nPick + ')');
+        postBtn.title = 'Push the picked findings to the pull request as one review of comments';
+        postBtn.onclick = postPicked;
+        head.appendChild(postBtn);
+      }
     }
     if (M.post && M.post.note) head.appendChild(h('span', 'pill', M.post.note));
     renderList(M);
@@ -568,7 +576,7 @@ export const TEMPLATE = `<!doctype html>
       el.appendChild(file);
       FL[p].forEach(function (f) {
         var row = h('label', f.posted ? 'posted' : ''), box = document.createElement('input');
-        box.type = 'checkbox'; box.checked = !!fpick[f.id]; box.disabled = f.posted || !canPost();
+        box.type = 'checkbox'; box.checked = !!fpick[f.id]; box.disabled = !!f.posted;
         box.onchange = function () { if (box.checked) fpick[f.id] = true; else delete fpick[f.id]; render(window.MAP); renderDrawer(); };
         row.appendChild(box);
         row.appendChild(h('span', 'fl-line', f.line ? 'L' + f.line : 'file'));
@@ -582,6 +590,25 @@ export const TEMPLATE = `<!doctype html>
     el.scrollTop = keep;
   }
   function canPost() { return CAN_SEND && !!(window.MAP && window.MAP.post && window.MAP.post.can); }
+  function pickedFindings() {
+    var FL = (window.MAP && window.MAP.findings) || {}, out = [];
+    Object.keys(FL).forEach(function (p) { FL[p].forEach(function (f) { if (fpick[f.id]) out.push(f); }); });
+    return out;
+  }
+  // The picked findings as a request to Claude; deliver() sends it to the session, or copies it where there is no server.
+  function sendPicked() {
+    var list = pickedFindings();
+    if (!list.length) return;
+    var where = window.MAP && window.MAP.where, lines = ['Fix these ' + list.length + ' code review finding' + (list.length === 1 ? '' : 's') + (where && where.branch ? ' (branch ' + where.branch + ')' : '') + '. Check each against the code before changing it, and say if one is wrong:', ''];
+    list.forEach(function (f, i) {
+      lines.push((i + 1) + '. ' + f.file + (f.line ? ':' + f.line : '') + (f.severity ? ' [' + f.severity + ']' : '') + ' - ' + f.summary);
+      if (f.scenario) lines.push('   ' + f.scenario);
+    });
+    deliver(lines.join('\\n'), function (sent) {
+      toast(sent ? 'Sent ' + list.length + ' finding' + (list.length === 1 ? '' : 's') + ' to Claude.' : 'Copied ' + list.length + '. Paste into Claude.');
+      fpick = {}; render(window.MAP); renderDrawer();
+    });
+  }
   function postPicked() {
     var ids = Object.keys(fpick).map(Number);
     if (!ids.length) return;
@@ -593,8 +620,8 @@ export const TEMPLATE = `<!doctype html>
   function findingEl(f) {
     var el = h('div', 'finding' + (f.posted ? ' posted' : ''));
     var box = document.createElement('input');
-    box.type = 'checkbox'; box.checked = !!fpick[f.id]; box.disabled = f.posted || !canPost();
-    box.title = f.posted ? 'Already on the pull request' : canPost() ? 'Pick to push to the pull request' : 'Needs the local server and a page about a pull request';
+    box.type = 'checkbox'; box.checked = !!fpick[f.id]; box.disabled = !!f.posted;
+    box.title = f.posted ? 'Already on the pull request' : 'Pick to send to Claude' + (canPost() ? ' or post to the pull request' : '');
     box.onchange = function () { if (box.checked) fpick[f.id] = true; else delete fpick[f.id]; render(window.MAP); renderDrawer(); };
     var body = h('div', 'fbody');
     body.appendChild(h('b', '', (f.severity ? f.severity + ' \\u00b7 ' : '') + f.summary));

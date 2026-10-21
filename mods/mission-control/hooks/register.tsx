@@ -571,7 +571,7 @@ async function writePage($: EngineInterface) {
   const all0 = await read($, findings)
   const { matched } = byPath(all0, (await read($, files)).map(f => f.path))
   const flagged = Object.fromEntries(Object.entries(matched).map(([p, fs]) => [p, fs.filter(f => !f.posted).length || fs.length]))
-  const shown = Object.fromEntries(Object.entries(matched).map(([p, fs]) => [p, fs.map(f => ({ id: all0.indexOf(f), line: f.line, summary: f.summary, scenario: f.scenario, severity: f.severity, posted: f.posted === true }))]))
+  const shown = Object.fromEntries(Object.entries(matched).map(([p, fs]) => [p, fs.map(f => ({ id: all0.indexOf(f), file: f.file, line: f.line, summary: f.summary, scenario: f.scenario, severity: f.severity, posted: f.posted === true }))]))
   const data = {
     ...mapData(await read($, files), { at, turn: await read($, turn) }, flagged),
     who: { summary: summary(list), lines: lines(list, at).map(l => ({ prefix: l.prefix, text: l.text, status: l.status, kind: l.node.kind })) },
