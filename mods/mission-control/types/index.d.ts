@@ -24,6 +24,16 @@ export type MapFile = {
   review?: boolean // put on the map by /mission review: shown as changed until the next turn
 }
 
+// One problem an AI review found, drawn pink on the file's box and under its line in the diff drawer.
+export type Finding = {
+  file: string // repo-relative, or the map's own path
+  line?: number // 1-indexed, in the new version of the file
+  summary: string
+  scenario?: string
+  severity?: string
+  posted?: boolean // already pushed to the pull request
+}
+
 // What the page is looking at: the branch, what it is compared with, and its pull request.
 export type MissionWhere = { branch: string; base?: string; pr?: { number: number; url: string } }
 
@@ -36,6 +46,7 @@ declare module 'claude-code' {
       sid: string
       diffs: Record<string, { text: string; ref?: string }>
       where: MissionWhere
+      findings: Finding[]
     }
   }
 }

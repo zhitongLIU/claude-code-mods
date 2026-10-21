@@ -63,6 +63,7 @@ export type MapCard = {
   why?: string
   state: 'read' | 'edit' | 'changed' | null // what the card glows for: being read, being edited, changed this turn
   live: boolean // touched in the last few seconds
+  flags: number // review findings on the file: the box is drawn pink when above 0
 }
 
 export type MapData = {
@@ -76,13 +77,13 @@ export type MapData = {
 }
 
 // Everything the page draws, as plain data: the template lays it out and draws the arrows.
-export function mapData(files: MapFile[], look: Look): MapData {
+export function mapData(files: MapFile[], look: Look, flagged: Record<string, number> = {}): MapData {
   const { at, turn } = look
   const isChanged = (f: MapFile) => f.review === true || (f.changedTurn === turn && turn > 0)
   const isLive = (f: MapFile) => at - f.at < 5000
   const es = edges(files)
   const linked = new Set(es.flatMap(e => [e.from, e.to]))
-  const main = files.filter(f => linked.has(f.path) || isChanged(f) || isLive(f) || f.act !== 'read')
+  const main = files.filter(f => linked.has(f.path) || isChanged(f) || isLive(f) || f.act !== 'read' || (flagged[f.path] ?? 0) > 0)
   const extra = files.filter(f => !main.includes(f))
   const mainEs = es.filter(e => main.some(f => f.path === e.from) && main.some(f => f.path === e.to))
   const byPath = new Map(main.map(f => [f.path, f]))
@@ -93,7 +94,7 @@ export function mapData(files: MapFile[], look: Look): MapData {
     const f = byPath.get(p) as MapFile
     const live = isLive(f)
     const state = live ? (readLike(f) ? 'read' : 'edit') : isChanged(f) ? 'changed' : null
-    return { id: p, title: title(f), sub: folder(p, 2), why: f.why, state, live }
+    return { id: p, title: title(f), sub: folder(p, 2), why: f.why, state, live, flags: flagged[p] ?? 0 }
   }
   const newest = files.filter(isLive).sort((a, b) => b.at - a.at)[0]
   return {

@@ -14,7 +14,7 @@ export const TEMPLATE = `<!doctype html>
 <title>Mission Control</title>
 <style>
   :root { --bg:#0d1015; --card:#151922; --card-live:#1b2130; --line:#2a3140; --text:#e8ebf2; --dim:#7d8698; --faint:#4b5263;
-          --edge:#3a4252; --edge-hot:#6b7a96; --read:#5aa9ff; --edit:#ffa24c; --changed:#3ddc84; }
+          --edge:#3a4252; --edge-hot:#6b7a96; --read:#5aa9ff; --edit:#ffa24c; --changed:#3ddc84; --flag:#ff5fa8; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
     font: 14px -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif; }
@@ -58,6 +58,10 @@ export const TEMPLATE = `<!doctype html>
   .card.edit { border-color: var(--edit); box-shadow: 0 0 22px rgba(255,162,76,.35); }
   .card.changed::before, .card.read::before, .card.edit::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3.5px; border-radius: 2px; background: var(--accent); }
   .card.read { --accent: var(--read); } .card.edit { --accent: var(--edit); } .card.changed { --accent: var(--changed); }
+  .card.flagged { border-color: var(--flag); box-shadow: 0 0 22px rgba(255,95,168,.35); background: #20141d; --accent: var(--flag); }
+  .card.flagged::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3.5px; border-radius: 2px; background: var(--flag); }
+  .badge.flag { color: var(--flag); font-weight: 650; margin-left: 8px; }
+  .pill.flag { color: var(--flag); border-color: var(--flag); }
   .name { display: flex; justify-content: space-between; gap: 12px; font-weight: 650; font-size: 14.5px; white-space: nowrap; }
   .badge { color: var(--accent); font-weight: 400; font-size: 13px; }
   .sub { margin-top: 2px; font: 11px 'SF Mono', Menlo, monospace; color: var(--faint); white-space: nowrap; }
@@ -106,6 +110,11 @@ export const TEMPLATE = `<!doctype html>
   .note { display: flex; gap: 10px; align-items: flex-start; white-space: pre-wrap; }
   .note span { flex: 1; overflow-wrap: anywhere; }
   .note.sent { opacity: .6; }
+  .finding { display: flex; gap: 10px; align-items: flex-start; margin: 6px 16px 8px 68px; padding: 8px 12px; border: 1px solid var(--flag); border-radius: 8px; background: #26121d; font: 13px -apple-system, sans-serif; width: min(640px, calc(100% - 100px)); white-space: normal; }
+  .finding input { margin-top: 3px; accent-color: var(--flag); }
+  .finding .fbody { flex: 1; overflow-wrap: anywhere; } .finding b { color: #ffb3d6; }
+  .finding .fsc { margin-top: 4px; color: #c9a3b6; line-height: 18px; }
+  .finding.posted { opacity: .55; }
   .note button { border: 0; background: none; color: var(--faint); cursor: pointer; }
   .editor textarea { display: block; width: 100%; min-height: 58px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #0d1015; color: var(--text); font: 13px -apple-system, sans-serif; resize: vertical; }
   .editor .btns { display: flex; gap: 8px; margin-top: 8px; }
@@ -191,6 +200,23 @@ export const TEMPLATE = `<!doctype html>
     head.appendChild(h('span', 'pill', S.agents + ' agents (' + S.running + ' running) \u00b7 ' + S.tools + ' tool calls' + (S.failed ? ' \u00b7 ' + S.failed + ' failed' : '')));
     head.appendChild(h('span', 'pill', M.files + ' files'));
     head.appendChild(h('span', 'pill' + (M.changed ? ' on' : ''), M.changed + ' changed'));
+    var FL = M.findings || {}, fAll = [];
+    Object.keys(FL).forEach(function (p) { FL[p].forEach(function (f) { fAll.push(f); }); });
+    if (fAll.length) head.appendChild(h('span', 'pill flag', '\\u2691 ' + fAll.length + ' finding' + (fAll.length === 1 ? '' : 's')));
+    var openF = fAll.filter(function (f) { return !f.posted; });
+    if (canPost() && openF.length) {
+      var all = h('button', 'tab', Object.keys(fpick).length === openF.length ? 'Unselect findings' : 'Select findings');
+      all.title = 'Pick every finding that is not on the pull request yet';
+      all.onclick = function () { var every = Object.keys(fpick).length === openF.length; fpick = {}; if (!every) openF.forEach(function (f) { fpick[f.id] = true; }); render(window.MAP); renderDrawer(); };
+      head.appendChild(all);
+    }
+    if (Object.keys(fpick).length) {
+      var postBtn = h('button', 'tab go', 'Post to PR (' + Object.keys(fpick).length + ')');
+      postBtn.title = 'Push the picked findings to the pull request as one review of comments';
+      postBtn.onclick = postPicked;
+      head.appendChild(postBtn);
+    }
+    if (M.post && M.post.note) head.appendChild(h('span', 'pill', M.post.note));
     if (pending.length) {
       var fresh = pending.filter(function (c) { return !c.sent; }).length;
       if (fresh) {
@@ -245,11 +271,12 @@ export const TEMPLATE = `<!doctype html>
       g.columns.forEach(function (col) {
         var colEl = h('div', 'col');
         col.forEach(function (c) {
-          var el = h('div', 'card' + (c.live ? ' live' : '') + (c.state ? ' ' + c.state : '') + (hasDiff(M, c.id) ? ' diffable' : '') + (openPath === c.id ? ' open' : ''));
+          var el = h('div', 'card' + (c.live ? ' live' : '') + (c.state ? ' ' + c.state : '') + (c.flags ? ' flagged' : '') + (hasDiff(M, c.id) ? ' diffable' : '') + (openPath === c.id ? ' open' : ''));
           if (hasDiff(M, c.id)) el.title = 'Click for the diff';
           var name = h('div', 'name', c.title);
           var badge = c.live ? (c.state === 'edit' ? '\\u270e' : '\\u25cf') : c.state === 'changed' ? '\\u2713' : '';
           if (badge) name.appendChild(h('span', 'badge', badge));
+          if (c.flags) { var fb = h('span', 'badge flag', '\\u2691 ' + c.flags); fb.title = c.flags + ' review finding' + (c.flags === 1 ? '' : 's') + ' on this file'; name.appendChild(fb); }
           el.appendChild(name);
           el.appendChild(h('div', 'sub', c.sub));
           if (c.why) el.appendChild(h('div', 'why', c.why));
@@ -501,6 +528,30 @@ export const TEMPLATE = `<!doctype html>
   }
   window.addEventListener('mouseup', function () { if (selDrag) { selDrag = false; renderDrawer(); } });
   function diffOf(path) { return window.DIFFS && window.DIFFS[path]; }
+  // Review findings: the reviewer picks the ones to push to the pull request. Only ids go back; the mod posts what it holds.
+  var fpick = {};
+  function canPost() { return CAN_SEND && !!(window.MAP && window.MAP.post && window.MAP.post.can); }
+  function postPicked() {
+    var ids = Object.keys(fpick).map(Number);
+    if (!ids.length) return;
+    if (!confirm('Post ' + ids.length + ' comment' + (ids.length === 1 ? '' : 's') + ' to the pull request as one review?')) return;
+    fetch('post', { method: 'POST', body: JSON.stringify({ ids: ids }) }).then(function (r) {
+      if (r.ok) { fpick = {}; toast('Posting to the pull request\\u2026'); render(window.MAP); renderDrawer(); } else toast('Could not send the request');
+    }, function () { toast('Could not send the request'); });
+  }
+  function findingEl(f) {
+    var el = h('div', 'finding' + (f.posted ? ' posted' : ''));
+    var box = document.createElement('input');
+    box.type = 'checkbox'; box.checked = !!fpick[f.id]; box.disabled = f.posted || !canPost();
+    box.title = f.posted ? 'Already on the pull request' : canPost() ? 'Pick to push to the pull request' : 'Needs the local server and a page about a pull request';
+    box.onchange = function () { if (box.checked) fpick[f.id] = true; else delete fpick[f.id]; render(window.MAP); renderDrawer(); };
+    var body = h('div', 'fbody');
+    body.appendChild(h('b', '', (f.severity ? f.severity + ' \\u00b7 ' : '') + f.summary));
+    if (f.scenario) body.appendChild(h('div', 'fsc', f.scenario));
+    if (f.posted) body.appendChild(h('div', 'fsc', '\\u2713 pushed to the pull request'));
+    el.appendChild(box); el.appendChild(body);
+    return el;
+  }
   function sameRow(a, b) { return a.k === b.k && a.o === b.o && a.n === b.n; }
   function renderDrawer() {
     var el = document.getElementById('drawer');
@@ -538,6 +589,13 @@ export const TEMPLATE = `<!doctype html>
       if (at < 0) at = rowsNow.length - 1; // its lines moved on: it still shows, at the end
       (anchor[at] = anchor[at] || []).push(c);
     });
+    var fAnchor = {};
+    ((window.MAP && window.MAP.findings && window.MAP.findings[openPath]) || []).forEach(function (f) {
+      var at = -1;
+      if (f.line) rowsNow.forEach(function (r, i) { if (r.k !== 'h' && r.k !== 'd' && r.n === f.line) at = i; });
+      if (at < 0) body.appendChild(findingEl(f)); // no line, or not in this diff: on the file
+      else (fAnchor[at] = fAnchor[at] || []).push(f);
+    });
     rowsNow.forEach(function (r, i) {
       if (r.k === 'h') { body.appendChild(h('div', 'row hunk', r.t)); return; }
       var row = h('div', 'row k-' + r.k + (i >= lo && i <= hi ? ' sel' : ''));
@@ -562,6 +620,7 @@ export const TEMPLATE = `<!doctype html>
       else highlight(r.t, ext).forEach(function (t) { code.appendChild(t[0] ? h('span', 't-' + t[0], t[1]) : document.createTextNode(t[1])); });
       row.appendChild(code);
       body.appendChild(row);
+      (fAnchor[i] || []).forEach(function (f) { body.appendChild(findingEl(f)); });
       (anchor[i] || []).forEach(function (c) {
         var late = !c.sent && changedSince(c);
         var note = h('div', 'note' + (c.sent ? ' sent' : ''));
@@ -600,7 +659,7 @@ export const TEMPLATE = `<!doctype html>
     document.head.appendChild(s);
   }
 
-  var last = JSON.stringify(window.MAP);
+  var last = JSON.stringify(window.MAP), lastF = JSON.stringify(window.MAP && window.MAP.findings);
   render(window.MAP);
   syncDiffs();
   window.addEventListener('resize', function () { render(window.MAP); });
@@ -623,7 +682,7 @@ export const TEMPLATE = `<!doctype html>
       s.src = 'data.js?t=' + Date.now();
       s.onload = function () {
         var now = JSON.stringify(window.MAP);
-        if (now !== last) { last = now; syncDiffs(); if (dragging) stale = true; else render(window.MAP); }
+        if (now !== last) { last = now; syncDiffs(); if (dragging) stale = true; else render(window.MAP); var fnow = JSON.stringify(window.MAP && window.MAP.findings); if (fnow !== lastF) { lastF = fnow; if (!selDrag) renderDrawer(); } }
         s.remove();
       };
       s.onerror = function () { s.remove(); };

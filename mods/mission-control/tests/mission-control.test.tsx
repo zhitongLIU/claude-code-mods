@@ -3,6 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import { SERVER, parseLine, portFor, splitLines } from '../hooks/bridge'
 import { categoryOf } from '../hooks/category'
 import { addedDiff, formatComment, formatReview, parseDiff } from '../hooks/diff'
+import { byPath, matchPath, merge, normalize, parseFindings, prRef, reviewPayload } from '../hooks/findings'
 import { highlight } from '../hooks/highlight'
 import { htmlRows, langOf } from '../hooks/hl'
 import { linksOf } from '../hooks/lang'
@@ -473,5 +474,38 @@ describe('mission-control', () => {
     expect(TEMPLATE).toContain("fetch('send'")
     expect(SERVER).toContain('127.0.0.1')
     expect(SERVER).not.toMatch(/`|\$\{/)
+  })
+
+  test('review findings: normalized, matched to map files, pink, and pushed to the pull request by id', () => {
+    // ReportFindings fields are accepted as they are; rows without a file or summary are dropped.
+    const got = normalize({ findings: [{ file: 'a/b.rb', line: 12, summary: 'Race', failure_scenario: 'x then y', category: 'correctness' }, { file: '', summary: 'no file' }, { file: 'c.rb' }, { file: 'd.rb', line: 0, summary: 'bad line' }] })
+    expect(got).toEqual([
+      { file: 'a/b.rb', line: 12, summary: 'Race', scenario: 'x then y', severity: 'correctness' },
+      { file: 'd.rb', line: undefined, summary: 'bad line', scenario: undefined, severity: undefined },
+    ])
+    expect(parseFindings('not json')).toEqual([])
+    // Repo-relative files meet the map's absolute paths, the closest to the root winning.
+    expect(matchPath('a/b.rb', ['/r/x/a/b.rb', '/r/a/b.rb'])).toBe('/r/a/b.rb')
+    expect(matchPath('b.rb', ['/r/ab.rb'])).toBeUndefined()
+    expect(byPath(got, ['/r/a/b.rb'])).toEqual({ matched: { '/r/a/b.rb': [got[0]] }, unmatched: 1 })
+    expect(merge(got, [got[0] as any, { file: 'e.rb', summary: 'new' }], true)).toHaveLength(3)
+    expect(merge(got, [{ file: 'e.rb', summary: 'new' }], false)).toHaveLength(1)
+    // A file with findings is on the map and carries its count, pink on the page.
+    const out = mapData([{ path: '/r/a/b.rb', act: 'read', at: 0, changedTurn: 0, imports: [] }], { at: 99_999, turn: 1 }, { '/r/a/b.rb': 2 })
+    expect(out.groups[0]?.columns[0]?.[0]?.flags).toBe(2)
+    expect(TEMPLATE).toContain('--flag:#ff5fa8')
+    expect(TEMPLATE).toContain('.card.flagged')
+    // The page sends ids only; the mod posts one review of comments, and no approval.
+    expect(parseLine('{"post":[0,2]}')).toEqual({ post: [0, 2] })
+    expect(parseLine('{"post":[-1]}')).toBeUndefined()
+    expect(parseLine('{"post":[]}')).toBeUndefined()
+    expect(SERVER).toContain("name === 'post'")
+    expect(TEMPLATE).toContain("fetch('post'")
+    expect(prRef('https://github.com/TheMenu/benefits-gift-fr/pull/5671')).toEqual({ repo: 'TheMenu/benefits-gift-fr', number: '5671' })
+    expect(prRef('https://evil.test/a/b/pull/1')).toBeUndefined()
+    const review = reviewPayload([got[0] as any, { file: '/x/y.rb', summary: 'whole file' }], 'a'.repeat(40))
+    expect(review.event).toBe('COMMENT')
+    expect(review.comments[0]).toEqual({ path: 'a/b.rb', body: '**correctness** · Race\n\nx then y', line: 12, side: 'RIGHT' })
+    expect(review.comments[1]).toEqual({ path: 'x/y.rb', body: 'whole file', subject_type: 'file' })
   })
 })

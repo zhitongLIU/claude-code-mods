@@ -1,6 +1,7 @@
 // The way back from the page to the session. The mod cannot listen on a socket, so it runs this small Node
 // server as a child process (`$.process.spawn`). It serves the page on 127.0.0.1 and turns each POST /<token>/send
-// into one JSON line on stdout, which register.tsx reads and submits as a prompt. Where Node is missing or the
+// into one JSON line on stdout, which register.tsx reads and submits as a prompt, and each POST /<token>/post
+// (the ids of findings to push to the pull request) into a line the mod answers by posting a review. Where Node is missing or the
 // server fails, the page is opened from disk and keeps its clipboard buttons.
 // Keep SERVER free of backticks, dollar-brace sequences and backslashes: it is one template literal.
 
@@ -36,6 +37,18 @@ var server = http.createServer(function (req, res) {
     })
     return
   }
+  if (req.method === 'POST' && name === 'post') {
+    var raw = ''
+    req.on('data', function (c) { raw += c; if (raw.length > MAX) { res.writeHead(413); res.end(); req.destroy() } })
+    req.on('end', function () {
+      var ids
+      try { ids = JSON.parse(raw).ids } catch (err) {}
+      if (!Array.isArray(ids) || !ids.length || !ids.every(function (n) { return Number.isInteger(n) && n >= 0 })) { res.writeHead(400); return res.end() }
+      out({ post: ids })
+      res.writeHead(204); res.end()
+    })
+    return
+  }
   if (req.method === 'GET' && TYPES[name]) {
     fs.readFile(path.join(dir, name), function (err, buf) {
       if (err) { res.writeHead(404); return res.end() }
@@ -56,7 +69,7 @@ server.on('error', function (err) { if (want && err.code === 'EADDRINUSE') { wan
 server.listen(want, '127.0.0.1', ready)
 `
 
-export type BridgeLine = { ready: true; port: number; token: string } | { send: string } | { beat: true }
+export type BridgeLine = { ready: true; port: number; token: string } | { send: string } | { post: number[] } | { beat: true }
 
 // What a line of the server's stdout says, or undefined for anything else.
 export function parseLine(line: string): BridgeLine | undefined {
@@ -64,6 +77,7 @@ export function parseLine(line: string): BridgeLine | undefined {
     const v = JSON.parse(line) as Record<string, unknown>
     if (v.ready === true && typeof v.port === 'number' && typeof v.token === 'string' && /^\w+$/.test(v.token)) return { ready: true, port: v.port, token: v.token }
     if (typeof v.send === 'string') return { send: v.send }
+    if (Array.isArray(v.post) && v.post.length > 0 && v.post.every(n => Number.isInteger(n) && n >= 0)) return { post: v.post as number[] }
     if (v.beat === 1) return { beat: true }
   } catch {
     // not ours: ignore
