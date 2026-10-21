@@ -501,7 +501,8 @@ describe('mission-control', () => {
     expect(parseLine('{"post":[]}')).toBeUndefined()
     expect(SERVER).toContain("name === 'post'")
     expect(TEMPLATE).toContain("fetch('post'")
-    expect(TEMPLATE).toContain('Send to Claude (') // local code: the picked findings go to the session
+    expect(TEMPLATE).toContain('Send to Claude (') // the picked findings go to the session or the pull request, as chosen
+    expect(TEMPLATE).toContain('Send to PR (')
     expect(TEMPLATE).toContain('id="flist"') // one checkbox per finding, in a list and under each line
     expect(prRef('https://github.com/TheMenu/benefits-gift-fr/pull/5671')).toEqual({ repo: 'TheMenu/benefits-gift-fr', number: '5671' })
     expect(prRef('https://evil.test/a/b/pull/1')).toBeUndefined()

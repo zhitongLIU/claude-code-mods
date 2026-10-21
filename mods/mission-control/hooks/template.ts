@@ -132,6 +132,10 @@ export const TEMPLATE = `<!doctype html>
   input.fsw:checked::after { transform: translateX(18px); background: #fff; }
   input.fsw:disabled { opacity: .4; cursor: default; }
   .finding { cursor: pointer; } .finding.posted { cursor: default; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+  .segb { padding: 5px 14px; border: 0; background: #151b27; color: var(--dim); font-size: 13px; cursor: pointer; }
+  .segb.on { background: var(--flag); color: #fff; font-weight: 650; }
+  .segb:disabled { opacity: .4; cursor: default; }
   .swall { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: #151b27; color: var(--text); font-size: 13px; cursor: pointer; user-select: none; }
   .swall:hover { border-color: var(--flag); }
   .note button { border: 0; background: none; color: var(--faint); cursor: pointer; }
@@ -240,18 +244,20 @@ export const TEMPLATE = `<!doctype html>
       head.appendChild(all);
     }
     if (Object.keys(fpick).length) {
-      var nPick = Object.keys(fpick).length;
-      // Local code, a branch with no pull request: the picked findings go to the Claude session to be fixed.
-      var toClaude = h('button', 'tab' + (canPost() ? '' : ' go'), (CAN_SEND ? 'Send to Claude (' : 'Copy for Claude (') + nPick + ')');
-      toClaude.title = 'Hand the picked findings to the Claude session as a request to fix them';
-      toClaude.onclick = sendPicked;
-      head.appendChild(toClaude);
-      if (canPost()) {
-        var postBtn = h('button', 'tab go', 'Post to PR (' + nPick + ')');
-        postBtn.title = 'Push the picked findings to the pull request as one review of comments';
-        postBtn.onclick = postPicked;
-        head.appendChild(postBtn);
-      }
+      var nPick = Object.keys(fpick).length, toPr = canPost() && dest !== 'claude';
+      // Where the picked findings go: the pull request (when the page is about one) or the Claude session.
+      var seg = h('span', 'seg');
+      [['pr', 'PR'], ['claude', 'Claude']].forEach(function (d) {
+        var on = (d[0] === 'pr') === toPr, b = h('button', 'segb' + (on ? ' on' : ''), d[1]);
+        if (d[0] === 'pr' && !canPost()) { b.disabled = true; b.title = 'Needs the local server and a page about a pull request (/mission <PR link>)'; }
+        b.onclick = function () { dest = d[0]; render(window.MAP); };
+        seg.appendChild(b);
+      });
+      head.appendChild(seg);
+      var go = h('button', 'tab go', toPr ? 'Send to PR (' + nPick + ')' : (CAN_SEND ? 'Send to Claude (' : 'Copy for Claude (') + nPick + ')');
+      go.title = toPr ? 'Push the picked findings to the pull request as one review of comments' : 'Hand the picked findings to the Claude session as a request to fix them';
+      go.onclick = toPr ? postPicked : sendPicked;
+      head.appendChild(go);
     }
     if (M.post && M.post.note) head.appendChild(h('span', 'pill', M.post.note));
     renderList(M);
@@ -567,7 +573,7 @@ export const TEMPLATE = `<!doctype html>
   window.addEventListener('mouseup', function () { if (selDrag) { selDrag = false; renderDrawer(); } });
   function diffOf(path) { return window.DIFFS && window.DIFFS[path]; }
   // Review findings: the reviewer picks the ones to push to the pull request. Only ids go back; the mod posts what it holds.
-  var fpick = {}, showList = false;
+  var fpick = {}, showList = false, dest = 'pr';
   // Every finding in one panel, one checkbox each, so none needs its file opened to be picked or dropped.
   function renderList(M) {
     var el = document.getElementById('flist'), keep = el.scrollTop, FL = M.findings || {}, paths = Object.keys(FL);
