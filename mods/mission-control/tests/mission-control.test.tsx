@@ -3,7 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import { SERVER, parseLine, portFor, splitLines } from '../hooks/bridge'
 import { categoryOf } from '../hooks/category'
 import { addedDiff, formatComment, formatReview, parseDiff } from '../hooks/diff'
-import { byPath, diffLines, matchPath, merge, normalize, parseFindings, prRef, reviewPayload, splitByDiff } from '../hooks/findings'
+import { byPath, diffLines, dismiss, markStale, matchPath, merge, normalize, parseFindings, prRef, reviewPayload, splitByDiff } from '../hooks/findings'
 import { highlight } from '../hooks/highlight'
 import { htmlRows, langOf } from '../hooks/hl'
 import { linksOf } from '../hooks/lang'
@@ -500,6 +500,15 @@ describe('mission-control', () => {
     expect(parseLine('{"post":[-1]}')).toBeUndefined()
     expect(parseLine('{"post":[]}')).toBeUndefined()
     expect(SERVER).toContain("name === 'post'")
+    // An edit marks the file's open findings stale (amber, kept); dismissing puts one away by id.
+    const fs = [{ file: 'a/x.ts', summary: 'one' }, { file: 'a/x.ts', summary: 'two', posted: true }, { file: 'b/y.ts', summary: 'three' }]
+    const marked = markStale(fs, '/r/a/x.ts', ['/r/a/x.ts', '/r/b/y.ts'])
+    expect(marked.map(f => f.stale === true)).toEqual([true, false, false])
+    expect(dismiss(fs, [2]).map(f => f.dismissed === true)).toEqual([false, false, true])
+    expect(parseLine('{"dismiss":[1]}')).toEqual({ dismiss: [1] })
+    expect(parseLine('{"dismiss":[]}')).toBeUndefined()
+    expect(SERVER).toContain("name === 'dismiss'")
+    expect(TEMPLATE).toContain("fetch('dismiss'")
     expect(TEMPLATE).toContain("fetch('post'")
     expect(TEMPLATE).toContain('Send to Claude (') // the picked findings go to the session or the pull request, as chosen
     expect(TEMPLATE).toContain('Send to PR (')

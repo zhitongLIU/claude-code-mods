@@ -14,7 +14,7 @@ export const TEMPLATE = `<!doctype html>
 <title>Mission Control</title>
 <style>
   :root { --bg:#0d1015; --card:#151922; --card-live:#1b2130; --line:#2a3140; --text:#e8ebf2; --dim:#7d8698; --faint:#4b5263;
-          --edge:#3a4252; --edge-hot:#6b7a96; --read:#5aa9ff; --edit:#ffa24c; --changed:#3ddc84; --flag:#ff5fa8; }
+          --edge:#3a4252; --edge-hot:#6b7a96; --read:#5aa9ff; --edit:#ffa24c; --changed:#3ddc84; --flag:#ff5fa8; --stale:#ffbe3c; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
     font: 14px -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif; }
@@ -60,7 +60,10 @@ export const TEMPLATE = `<!doctype html>
   .card.read { --accent: var(--read); } .card.edit { --accent: var(--edit); } .card.changed { --accent: var(--changed); }
   .card.flagged { border-color: var(--flag); box-shadow: 0 0 22px rgba(255,95,168,.35); background: #20141d; --accent: var(--flag); }
   .card.flagged::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3.5px; border-radius: 2px; background: var(--flag); }
+  .card.flagged.stale { border-color: var(--stale); box-shadow: 0 0 22px rgba(255,190,60,.25); background: #211b10; --accent: var(--stale); }
+  .card.flagged.stale::before { background: var(--stale); }
   .badge.flag { color: var(--flag); font-weight: 650; margin-left: 8px; }
+  .badge.flag.stale { color: var(--stale); }
   .pill.flag { color: var(--flag); border-color: var(--flag); }
   .name { display: flex; justify-content: space-between; gap: 12px; font-weight: 650; font-size: 14.5px; white-space: nowrap; }
   .badge { color: var(--accent); font-weight: 400; font-size: 13px; }
@@ -116,6 +119,10 @@ export const TEMPLATE = `<!doctype html>
   .finding .fbody { flex: 1; overflow-wrap: anywhere; } .finding b { color: #ffb3d6; }
   .finding .fsc { margin-top: 4px; color: #c9a3b6; line-height: 18px; }
   .finding.posted { opacity: .55; }
+  .finding.stale { border-color: var(--stale); background: #211b10; } .finding.stale b { color: #ffd98a; }
+  .finding .fdis, #flist .fl-dis { flex: none; border: 0; background: none; color: var(--dim); cursor: pointer; font-size: 12px; }
+  .finding .fdis:hover, #flist .fl-dis:hover { color: var(--text); }
+  #flist label.stale .fl-line { color: var(--stale); }
   #flist { position: fixed; right: 16px; top: 64px; width: 400px; max-width: calc(100% - 32px); max-height: 60vh; overflow: auto; z-index: 8; border: 1px solid var(--flag); border-radius: 10px; background: #1a0f17; box-shadow: 0 12px 32px rgba(0,0,0,.55); font: 13px -apple-system, sans-serif; }
   #flist[hidden] { display: none; }
   #flist .fl-head { position: sticky; top: 0; display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #1a0f17; border-bottom: 1px solid #4a2438; }
@@ -328,12 +335,12 @@ export const TEMPLATE = `<!doctype html>
       g.columns.forEach(function (col) {
         var colEl = h('div', 'col');
         col.forEach(function (c) {
-          var el = h('div', 'card' + (c.live ? ' live' : '') + (c.state ? ' ' + c.state : '') + (c.flags ? ' flagged' : '') + (hasDiff(M, c.id) ? ' diffable' : '') + (openPath === c.id ? ' open' : '') + (focusId === c.id ? ' focus' : ''));
+          var el = h('div', 'card' + (c.live ? ' live' : '') + (c.state ? ' ' + c.state : '') + (c.flags ? ' flagged' : '') + (c.flags && c.stale ? ' stale' : '') + (hasDiff(M, c.id) ? ' diffable' : '') + (openPath === c.id ? ' open' : '') + (focusId === c.id ? ' focus' : ''));
           if (hasDiff(M, c.id)) el.title = 'Click for the diff';
           var name = h('div', 'name', c.title);
           var badge = c.live ? (c.state === 'edit' ? '\\u270e' : '\\u25cf') : c.state === 'changed' ? '\\u2713' : '';
           if (badge) name.appendChild(h('span', 'badge', badge));
-          if (c.flags) { var fb = h('span', 'badge flag', '\\u2691 ' + c.flags); fb.title = c.flags + ' review finding' + (c.flags === 1 ? '' : 's') + ' on this file'; name.appendChild(fb); }
+          if (c.flags) { var fb = h('span', 'badge flag' + (c.stale ? ' stale' : ''), '\\u2691 ' + c.flags); fb.title = c.flags + ' review finding' + (c.flags === 1 ? '' : 's') + ' on this file' + (c.stale ? ', written before the file was last edited' : ''); name.appendChild(fb); }
           el.appendChild(name);
           el.appendChild(h('div', 'sub', c.sub));
           if (c.why) el.appendChild(h('div', 'why', c.why));
@@ -601,15 +608,16 @@ export const TEMPLATE = `<!doctype html>
       file.title = p;
       el.appendChild(file);
       FL[p].forEach(function (f) {
-        var row = h('label', f.posted ? 'posted' : ''), box = document.createElement('input');
+        var row = h('label', (f.posted ? 'posted' : '') + (f.stale && !f.posted ? ' stale' : '')), box = document.createElement('input');
         box.type = 'checkbox'; box.className = 'fsw'; box.checked = !!fpick[f.id]; box.disabled = !!f.posted;
         box.onchange = function () { if (box.checked) fpick[f.id] = true; else delete fpick[f.id]; render(window.MAP); renderDrawer(); };
         row.appendChild(box);
         row.appendChild(h('span', 'fl-line', f.line ? 'L' + f.line : 'file'));
-        row.appendChild(h('span', '', (f.posted ? '\\u2713 ' : '') + f.summary));
+        row.appendChild(h('span', '', (f.posted ? '\\u2713 ' : '') + (f.stale && !f.posted ? '\\u21bb ' : '') + f.summary));
         var go = h('button', 'fl-open', '\\u2197'); go.title = 'Open the diff at this finding';
         go.onclick = function (e) { e.preventDefault(); if (openPath !== p) toggleDrawer(p); else renderDrawer(); };
         row.appendChild(go);
+        row.appendChild(dismissBtn(f, 'fl-dis'));
         el.appendChild(row);
       });
     });
@@ -643,8 +651,20 @@ export const TEMPLATE = `<!doctype html>
       if (r.ok) { fpick = {}; toast('Posting to the pull request\\u2026'); render(window.MAP); renderDrawer(); } else toast('Could not send the request');
     }, function () { toast('Could not send the request'); });
   }
+  // Puts a finding away for good. Only its id goes back; the mod marks it and the page stops drawing it.
+  function dismissBtn(f, cls) {
+    var b = h('button', cls, '\\u00d7'); b.title = 'Dismiss this finding';
+    b.onclick = function (e) {
+      e.preventDefault(); e.stopPropagation();
+      delete fpick[f.id];
+      fetch('dismiss', { method: 'POST', body: JSON.stringify({ ids: [f.id] }) }).then(function (r) {
+        if (!r.ok) toast('Could not dismiss');
+      }, function () { toast('Could not dismiss: needs the local server'); });
+    };
+    return b;
+  }
   function findingEl(f) {
-    var el = h('div', 'finding' + (f.posted ? ' posted' : ''));
+    var el = h('div', 'finding' + (f.posted ? ' posted' : '') + (f.stale && !f.posted ? ' stale' : ''));
     var box = document.createElement('input');
     box.type = 'checkbox'; box.className = 'fsw'; box.checked = !!fpick[f.id]; box.disabled = !!f.posted;
     box.title = f.posted ? 'Already on the pull request' : 'Pick to send to Claude' + (canPost() ? ' or post to the pull request' : '');
@@ -653,7 +673,8 @@ export const TEMPLATE = `<!doctype html>
     body.appendChild(h('b', '', (f.severity ? f.severity + ' \\u00b7 ' : '') + f.summary));
     if (f.scenario) body.appendChild(h('div', 'fsc', f.scenario));
     if (f.posted) body.appendChild(h('div', 'fsc', '\\u2713 pushed to the pull request'));
-    el.appendChild(box); el.appendChild(body);
+    else if (f.stale) body.appendChild(h('div', 'fsc', '\\u21bb edited since this review: the line may have moved, or it may be fixed'));
+    el.appendChild(box); el.appendChild(body); el.appendChild(dismissBtn(f, 'fdis'));
     el.onclick = function (e) { if (e.target !== box && !box.disabled) box.click(); }; // the whole card is the target, not just the switch
     return el;
   }

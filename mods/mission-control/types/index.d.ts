@@ -32,6 +32,8 @@ export type Finding = {
   scenario?: string
   severity?: string
   posted?: boolean // already pushed to the pull request
+  stale?: boolean // the file was edited after the review, so the line may have moved or the problem may be fixed
+  dismissed?: boolean // the reviewer put it away: nothing shows it
 }
 
 // What the page is looking at: the branch, what it is compared with, and its pull request.

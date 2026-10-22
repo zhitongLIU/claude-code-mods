@@ -52,6 +52,17 @@ export function byPath(findings: Finding[], mapPaths: string[]) {
   return { matched, unmatched }
 }
 
+// The findings on a file that was just edited, marked stale: they were written against the old text. Pushed ones stay as they are.
+export function markStale(all: Finding[], path: string, mapPaths: string[]): Finding[] {
+  return all.map(f => (!f.posted && !f.stale && matchPath(f.file, mapPaths) === path ? { ...f, stale: true } : f))
+}
+
+// The findings with the given ids (their index) put away.
+export function dismiss(all: Finding[], ids: number[]): Finding[] {
+  const gone = new Set(ids)
+  return all.map((f, i) => (gone.has(i) ? { ...f, dismissed: true } : f))
+}
+
 // A new set of findings on top of the old ones (`add`), or in place of them. The same file, line and summary counts once.
 export function merge(old: Finding[], next: Finding[], add: boolean): Finding[] {
   if (!add) return next

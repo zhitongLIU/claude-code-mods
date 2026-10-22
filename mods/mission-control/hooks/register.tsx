@@ -10,7 +10,7 @@ import type { Finding, MapFile, MissionNode, MissionWhere } from '../types'
 import { linksOf } from './lang'
 import { SERVER, parseLine, portFor, splitLines } from './bridge'
 import { addedDiff } from './diff'
-import { byPath, merge, normalize, parseFindings, prRef, reviewPayload, splitByDiff } from './findings'
+import { byPath, dismiss, markStale, merge, normalize, parseFindings, prRef, reviewPayload, splitByDiff } from './findings'
 import { HLJS } from './vendor-hljs'
 import { mapData } from './map'
 import { TEMPLATE } from './template'
@@ -426,7 +426,11 @@ async function touch($: EngineInterface, path: string, act: MapFile['act'], isCh
     const next: MapFile = { path, act, at: Date.now(), changedTurn: isChange ? t : (old?.changedTurn ?? 0), imports: links.imports.length ? links.imports : (old?.imports ?? []), names: links.names.length ? links.names : (old?.names ?? []), why: isChange ? undefined : old?.why, edits, editsTurn: isChange && what ? t : old?.editsTurn }
     return [...list.filter(f => f.path !== path), next].sort((a, b) => b.at - a.at).slice(0, MAX_FILES)
   })
-  if (isChange) await liveDiff($, path, typeof text === 'string' ? text : '')
+  if (isChange) {
+    const paths = (await read($, files)).map(f => f.path)
+    await update($, findings, old => markStale(old, path, paths))
+    await liveDiff($, path, typeof text === 'string' ? text : '')
+  }
   await publish($)
   $.clock.after(5500, () => void publish($).catch(() => {})) // again once the glow has faded
 }
@@ -582,11 +586,12 @@ async function writePage($: EngineInterface) {
   const at = Date.now()
   const list = await read($, nodes)
   const all0 = await read($, findings)
-  const { matched } = byPath(all0, (await read($, files)).map(f => f.path))
+  const { matched } = byPath(all0.filter(f => !f.dismissed), (await read($, files)).map(f => f.path))
   const flagged = Object.fromEntries(Object.entries(matched).map(([p, fs]) => [p, fs.filter(f => !f.posted).length || fs.length]))
-  const shown = Object.fromEntries(Object.entries(matched).map(([p, fs]) => [p, fs.map(f => ({ id: all0.indexOf(f), file: f.file, line: f.line, summary: f.summary, scenario: f.scenario, severity: f.severity, posted: f.posted === true }))]))
+  const stale = Object.fromEntries(Object.entries(matched).map(([p, fs]) => [p, fs.some(f => !f.posted) && fs.filter(f => !f.posted).every(f => f.stale)]))
+  const shown = Object.fromEntries(Object.entries(matched).map(([p, fs]) => [p, fs.map(f => ({ id: all0.indexOf(f), file: f.file, line: f.line, summary: f.summary, scenario: f.scenario, severity: f.severity, posted: f.posted === true, stale: f.stale === true }))]))
   const data = {
-    ...mapData(await read($, files), { at, turn: await read($, turn) }, flagged),
+    ...mapData(await read($, files), { at, turn: await read($, turn) }, flagged, stale),
     who: { summary: summary(list), lines: lines(list, at).map(l => ({ prefix: l.prefix, text: l.text, status: l.status, kind: l.node.kind })) },
   }
   // The diffs of the files on the map. The page loads diffs.js when `rev` changes, so data.js stays small.
@@ -646,6 +651,7 @@ function startBridge($: EngineInterface): Promise<string | undefined> {
             resolve(bridge.base)
           } else if (msg && 'send' in msg) void $.prompt.submit({ text: msg.send }).catch(() => {})
           else if (msg && 'post' in msg) void postFindings($, msg.post).catch(() => {})
+          else if (msg && 'dismiss' in msg) void update($, findings, old => dismiss(old, msg.dismiss)).then(() => publish($)).catch(() => {})
         }
       }
     })()
