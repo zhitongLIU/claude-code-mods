@@ -34,6 +34,7 @@ export type Ticket = {
   path?: string
   parent?: string
   contractSource: 'header' | 'extracted' | 'none'
+  skipped?: string[] // Contract lines the parser could not read
   blockedBy: Dep[]
   provides: Provide[]
   consumes: Checked[]
@@ -132,6 +133,7 @@ export function buildPlan(input: BuildInput): PlanData {
       url: ticketUrl.replace('{key}', key),
       parent: parent?.key,
       contractSource: contract ? 'header' : old ? 'extracted' : 'none',
+      skipped: contract?.skipped,
       blockedBy: contract ? contract.blockedBy : (old?.blockedBy ?? []),
       provides: contract ? contract.provides : (old?.provides ?? []),
       consumes: contract ? contract.consumes : (old?.consumes ?? []),
@@ -156,6 +158,7 @@ export function buildPlan(input: BuildInput): PlanData {
         path: s.ref,
         url: fileUrl(s.ref),
         contractSource: p.contract ? 'header' : 'none',
+        skipped: p.contract?.skipped,
         blockedBy: p.blockedBy,
         provides: p.contract?.provides ?? [],
         consumes: p.contract?.consumes ?? [],

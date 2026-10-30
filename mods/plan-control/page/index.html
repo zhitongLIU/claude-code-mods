@@ -338,6 +338,7 @@
       if (t.provides.length) meta.push('<span>⇢ ' + t.provides.length + ' provides</span>')
       if (t.external.length) meta.push('<span title="existing interfaces it relies on">⇠ ' + t.external.length + ' existing</span>')
       if (t.bad) meta.push('<span class="bad">⚑ mismatch</span>')
+      if (t.skipped && t.skipped.length) meta.push('<span class="bad" title="Contract lines the map could not read: open the box">⚑ ' + t.skipped.length + ' unread</span>')
       var title = t.status === 'loading' ? 'reading from Obeya…' : t.title
       c.innerHTML = '<div class="top"><span class="key">' + tk(t) + '</span>' + (t.moved ? '<button class="reset" title="put the box back (or double-click it)">↺</button>' : '') +
         '<span class="status s-' + esc(t.status) + '">' + esc(String(t.status).replace(/_/g, ' ')) + '</span></div>' +
@@ -484,6 +485,8 @@
         '<div class="row"><span class="lbl">Blocked by</span><span>' + (t.blockedBy.length ? t.blockedBy.map(depPill).join('') : '<span class="empty">none</span>') + '</span></div>' +
         '<div class="row"><span class="lbl">Unblocks</span><span>' + (outs.length ? outs.map(function (e) { return '<span class="pill">' + tkKey(e.to) + '</span>' }).join('') : '<span class="empty">none</span>') + '</span></div>' +
         (t.ready ? '<div class="row"><span class="lbl"></span><span class="ready-tag">every blocker is done — can start now</span></div>' : '') + '</div>'
+      if (t.skipped && t.skipped.length) h += '<div class="sec"><h3>Lines not read</h3><div class="ev">These Contract lines match no format, so the map ignores them. Write them as <code>- **provides** `kind id` `{ fields }`</code> or <code>- **consumes** `kind id` from KEY `{ fields }`</code>.</div>' +
+        t.skipped.map(function (l) { return '<div class="row"><code class="bad">' + esc(l) + '</code></div>' }).join('') + '</div>'
       h += '<div class="sec"><h3>Provides</h3>' + (t.provides.length ? t.provides.map(function (p) {
         var users = outs.filter(function (e) { return e.ifaces.some(function (i) { return i.id === p.id }) }).map(function (e) { return e.to })
         return '<div class="iface"><span class="k" style="background:' + (KIND_COLOR[kindOf(p.id)] || 'var(--dim)') + '"></span><span class="id">' + esc(p.id) + '</span>' +

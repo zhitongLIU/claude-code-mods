@@ -4,7 +4,8 @@
 export type Dep = { key: string; source: 'declared' | 'extracted' | 'inferred'; evidence: string }
 export type Provide = { id: string; delta: string[]; evidence?: string }
 export type Consume = { id: string; from: string | null; existing: boolean; delta: string[]; evidence?: string }
-export type Contract = { service?: string; blockedBy: Dep[]; provides: Provide[]; consumes: Consume[] }
+// skipped: the list items of a Contract block that matched no format, shown on the map so they can be fixed.
+export type Contract = { service?: string; blockedBy: Dep[]; provides: Provide[]; consumes: Consume[]; skipped: string[] }
 export type Child = { key: string; title: string; status: string }
 export type TaskContext = { key?: string; title?: string; status?: string; branch?: string; plan: string; children: Child[] }
 
@@ -54,11 +55,51 @@ export function parseTaskContext(raw: string): TaskContext {
   }
 }
 
+// The items of a field list, split on the commas outside braces: `a, b{c, d}` → `a`, `b{c, d}`.
+function items(list: string) {
+  const out: string[] = []
+  let depth = 0
+  let cur = ''
+  for (const ch of list) {
+    if (ch === ',' && depth === 0) {
+      out.push(cur)
+      cur = ''
+      continue
+    }
+    if (ch === '{') depth++
+    if (ch === '}') depth--
+    cur += ch
+  }
+  out.push(cur)
+  return out.map(s => s.trim()).filter(Boolean)
+}
+
+// `{ sid, -legacy, ~mode:string, summary{changed, now} }` → delta lines `+ sid`, `- legacy`, `~ mode: string`,
+// `+ summary.changed`, `+ summary.now`. A nested field takes its parent's sign unless it has its own.
+export function fieldsToDelta(list: string, prefix = '', sign = '+'): string[] {
+  const inner = /^\s*\{([\s\S]*)\}\s*$/.exec(list)
+  return items(inner ? g(inner, 1) : list).flatMap(item => {
+    const m = /^([+~-]?)\s*([^:{\s]+)\s*(?::\s*)?(\{[\s\S]*\})?(?::?\s*(.*))?$/.exec(item)
+    if (!m) return []
+    const s = g(m, 1) || sign
+    const name = prefix + g(m, 2)
+    if (g(m, 3)) return fieldsToDelta(g(m, 3), `${name}.`, s)
+    const type = g(m, 4).trim()
+    return [`${s} ${name}${type ? `: ${type}` : ''}`]
+  })
+}
+
+// `- **provides** \`db registry/<sid>.json\` \`{ sid, cwd }\`` and
+// `- **consumes** \`http /api/x\` from PC-2 \`{ updatedAt:number }\``: one line per interface.
+const BULLET = /^\s*[-*]\s+(?:\*\*)?(provides|consumes)(?:\*\*)?\s*:?\s+`([^`]+)`(.*)$/i
+
 // The `## Contract` header of a plan, or undefined when the plan has none (an older plan).
 // A plan spanning several services has one `## Contract — <service>` block each; they are merged.
+// Interfaces are bullets (BULLET), or the older `### Provides` / `### Consumes` lists with fenced deltas.
 export function parseContract(plan: string): Contract | undefined {
-  const lines = plan.split('\n')
-  const out: Contract = { blockedBy: [], provides: [], consumes: [] }
+  // A contract may sit in a `>` quote, to set it apart: the quote marks are dropped before reading.
+  const lines = plan.split('\n').map(l => l.replace(/^\s*>\s?/, ''))
+  const out: Contract = { blockedBy: [], provides: [], consumes: [], skipped: [] }
   let found = false
   let inBlock = false
   let list: 'provides' | 'consumes' | null = null
@@ -97,19 +138,38 @@ export function parseContract(plan: string): Contract | undefined {
     if (service) out.service = g(service, 1).trim()
     if (blocked) for (const key of g(blocked, 1).match(KEY) ?? []) out.blockedBy.push({ key, source: 'declared', evidence: `Blocked by: ${g(blocked, 1).trim()}` })
     if (service || blocked) continue
-    const item = /^\s*[-*]\s+`([^`]+)`(.*)$/.exec(line)
-    if (item && list) {
-      const rest = g(item, 2)
-      if (list === 'provides') {
-        const p: Provide = { id: g(item, 1).trim(), delta: [] }
-        out.provides.push(p)
-        last = p
+    const bullet = BULLET.exec(line)
+    if (bullet) {
+      const rest = g(bullet, 3)
+      const fields = /`\s*(\{[\s\S]*\})\s*`/.exec(rest) ?? /(\{[\s\S]*\})/.exec(rest)
+      const delta = fields ? fieldsToDelta(g(fields, 1)) : []
+      const id = g(bullet, 2).trim()
+      if (/^provides$/i.test(g(bullet, 1))) {
+        last = { id, delta }
+        out.provides.push(last)
       } else {
-        const from = /\bfrom\s+([A-Z][A-Z0-9]+-\d+)/.exec(rest)
-        const c: Consume = { id: g(item, 1).trim(), from: from ? g(from, 1) : null, existing: /existing/i.test(rest), delta: [] }
-        out.consumes.push(c)
-        last = c
+        const plain = rest.replace(/`[^`]*`/g, '')
+        const from = /\bfrom\s+([A-Z][A-Z0-9]+-\d+)/.exec(plain)
+        last = { id, from: from ? g(from, 1) : null, existing: /\bexisting\b/i.test(plain), delta }
+        out.consumes.push(last)
       }
+      continue
+    }
+    const item = /^\s*[-*]\s+`([^`]+)`(.*)$/.exec(line)
+    if (!item || !list) {
+      if (/^\s*[-*]\s+\S/.test(line) && !/^\s*[-*]\s+none\b/i.test(line)) out.skipped.push(line.trim())
+      continue
+    }
+    const rest = g(item, 2)
+    if (list === 'provides') {
+      const p: Provide = { id: g(item, 1).trim(), delta: [] }
+      out.provides.push(p)
+      last = p
+    } else {
+      const from = /\bfrom\s+([A-Z][A-Z0-9]+-\d+)/.exec(rest)
+      const c: Consume = { id: g(item, 1).trim(), from: from ? g(from, 1) : null, existing: /existing/i.test(rest), delta: [] }
+      out.consumes.push(c)
+      last = c
     }
   }
   return found ? out : undefined

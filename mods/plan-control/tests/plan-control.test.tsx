@@ -55,6 +55,43 @@ test('parseContract merges the per-service blocks of a multi-service plan', asyn
   expect(c?.blockedBy.length).toBe(0)
 })
 
+test('parseContract reads the one-line bullet format, nested fields included', async () => {
+  const c = parseContract([
+    '## Contract',
+    '**Service:** mission · **Blocked by:** PC-4',
+    '- **provides** `db mission registry/<sid>.json` `{ sid, cwd:string, summary{changed, now:number}, -legacy }`',
+    '- **consumes** `http /api/session` from PC-2 `{ +updatedAt:number|null, ~mode }`',
+    '- **consumes** `db config.json` existing',
+    '- provides db registry without backticks',
+    '- none',
+  ].join('\n'))
+  expect(c?.service).toBe('mission')
+  expect(c?.blockedBy.map(d => d.key)).toEqual(['PC-4'])
+  expect(c?.provides).toEqual([{ id: 'db mission registry/<sid>.json', delta: ['+ sid', '+ cwd: string', '+ summary.changed', '+ summary.now: number', '- legacy'] }])
+  expect(c?.consumes).toEqual([
+    { id: 'http /api/session', from: 'PC-2', existing: false, delta: ['+ updatedAt: number|null', '~ mode'] },
+    { id: 'db config.json', from: null, existing: true, delta: [] },
+  ])
+  expect(c?.skipped).toEqual(['- provides db registry without backticks'])
+})
+
+test('parseContract reads a contract set in a > quote', async () => {
+  const c = parseContract('## Contract\n> **Service:** mission · **Blocked by:** PC-4\n>\n> - **provides** `db registry/<sid>.json` `{ sid }`\n> - **consumes** `http /api/session` from PC-2 `{ updatedAt:number }`\n\n## Contexte\n> - not a contract line')
+  expect(c?.service).toBe('mission')
+  expect(c?.blockedBy.map(d => d.key)).toEqual(['PC-4'])
+  expect(c?.provides).toEqual([{ id: 'db registry/<sid>.json', delta: ['+ sid'] }])
+  expect(c?.consumes[0]?.from).toBe('PC-2')
+  expect(c?.skipped).toEqual([])
+})
+
+test('a bullet-format consumer is checked against a bullet-format provider', async () => {
+  const p = parseContract('## Contract\n- **provides** `db registry/<sid>.json` `{ branch, summary{changed} }`')
+  const c = parseContract('## Contract\n- **consumes** `db registry/<sid>.json` from P-1 `{ branch, summary{changed}, updatedAt:number }`')
+  const provider: Ticket = { key: 'P-1', kind: 'obeya', title: '', status: 'done', service: 's', contractSource: 'header', blockedBy: [], provides: p?.provides ?? [], consumes: [], files: [], prs: [] }
+  const consume = c?.consumes[0]
+  expect(consume && checkConsume(consume, provider).missing).toEqual(['updatedAt'])
+})
+
 test('parseTaskContext reads identity, plan and sub-tickets of an Obeya context', async () => {
   const ctx = parseTaskContext(context('CAO-219', { plan: PLAN, children: [['CAO-220', '[orders-api] Whitelist', 'done'], ['CAO-223', '[orders-api] OTP', 'in_dev']] }))
   expect(ctx.key).toBe('CAO-219')
