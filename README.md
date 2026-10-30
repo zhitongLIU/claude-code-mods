@@ -91,6 +91,14 @@ CLAUDE_CONFIG_DIR=$(mktemp -d) claude plugin test mods/mission-control
 
 `/plan-control` opens a live map of a piece of work: Obeya tickets and local plan files, the dependencies between them, the interfaces each one provides and consumes (from the plan's `## Contract` header), mismatches between them, and pull requests. It is meant for the global agent tab; `/mission` stays in each worktree's tab. Design: `docs/superpowers/specs/2026-10-28-plan-control-design.md`.
 
+**See where the work stands.** Each ticket sits in a wave (the ones that can start now, then what each finished wave unlocks) and is grouped by service. Its box shows its status and whether it is ready to start. Green edges mean the blocker is done, and the header counts tickets, done, ready and mismatches.
+
+![The map: tickets in waves, grouped by service, with dependencies, a ready ticket and an interface mismatch](screen_shots/plan-control-map.png)
+
+**Catch plans that don't agree.** When one plan reads an interface (an endpoint, a topic, a table, a file) that another plan provides, the edge between them carries it. If the reader expects a field that the provider never adds, the edge turns pink. Click it to see both sides next to each other, with the missing field flagged, before anyone writes code against it.
+
+![An edge opened: why PC-6 waits for PC-5, and the db interface PC-6 reads with a field PC-5 does not provide](screen_shots/plan-control-edge.png)
+
 <details>
 <summary><b>Install</b></summary>
 
