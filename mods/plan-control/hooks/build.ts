@@ -61,6 +61,7 @@ export type PlanData = {
   serviceOrder: string[]
   tickets: Ticket[]
   missing: string[] // Obeya keys on the map that no cached context covers yet
+  nearby: Record<string, { path: string; url: string }> // plan files next to one on the map but not on it, by id: a ghost opens its file
   positions: MapFile['positions'] // boxes the person dragged, by ticket key
 }
 
@@ -71,7 +72,10 @@ export type BuildInput = {
   extracted: Extracted[]
   prs: Record<string, PrRow[]> // repo → its pull requests
   ticketUrl?: string // where a ticket key opens, `{key}` replaced; TICKET_URL when unset
+  nearby?: Record<string, string> // path → text of the plan files next to one on the map but not on it
 }
+
+const fileUrl = (path: string) => `vscode://file${encodeURI(path)}`
 
 export function emptyMap(cwd: string): MapFile {
   return { title: '', cwd, updatedAt: new Date().toISOString(), sources: [], excluded: [], positions: {} }
@@ -150,7 +154,7 @@ export function buildPlan(input: BuildInput): PlanData {
         status: p.status,
         service,
         path: s.ref,
-        url: `vscode://file${encodeURI(s.ref)}`,
+        url: fileUrl(s.ref),
         contractSource: p.contract ? 'header' : 'none',
         blockedBy: p.blockedBy,
         provides: p.contract?.provides ?? [],
@@ -170,6 +174,11 @@ export function buildPlan(input: BuildInput): PlanData {
 
   const list = [...tickets.values()]
   attachChecks(list, aliases)
+  const nearby: PlanData['nearby'] = {}
+  for (const [path, text] of Object.entries(input.nearby ?? {})) {
+    const id = parseLocalPlan(path, text).id
+    if (!tickets.has(id)) nearby[id] = { path, url: fileUrl(path) }
+  }
   return {
     title: map.title || epics[0]?.title || [...tickets.values()][0]?.title || 'Plan',
     epics,
@@ -178,6 +187,7 @@ export function buildPlan(input: BuildInput): PlanData {
     serviceOrder: order,
     tickets: list,
     missing,
+    nearby,
     positions: map.positions ?? {},
   }
 }

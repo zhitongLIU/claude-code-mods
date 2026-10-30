@@ -195,9 +195,12 @@
       t.blockedBy.forEach(function (b) { refs[real(b.key)] = 1 })
       t.consumes.forEach(function (c) { if (c.from) refs[real(c.from)] = 1 })
     })
+    // A ghost that is a plan file next to one on the map opens that file, and + add adds the file.
+    var nearby = PLAN.nearby || {}
     Object.keys(refs).forEach(function (k) {
-      if (byKey[k] || !/^[A-Z][A-Z0-9]+-\d+$/.test(k)) return
-      var g = { key: k, kind: 'ghost', title: 'not on the map', status: 'ghost', service: 'not on the map', provides: [], consumes: [], blockedBy: [], files: [], prs: [], url: (PLAN.ticketUrl || '').replace('{key}', k) }
+      var local = Object.prototype.hasOwnProperty.call(nearby, k) ? nearby[k] : undefined
+      if (byKey[k] || !(local || /^[A-Z][A-Z0-9]+-\d+$/.test(k))) return
+      var g = { key: k, kind: 'ghost', title: 'not on the map', status: 'ghost', service: 'not on the map', provides: [], consumes: [], blockedBy: [], files: [], prs: [], path: local && local.path, url: local ? local.url : (PLAN.ticketUrl || '').replace('{key}', k) }
       tickets.push(g); byKey[k] = g
     })
 
@@ -329,7 +332,7 @@
       var c = el('div', 'card' + (t.status === 'done' ? ' done' : '') + (t.ready ? ' ready' : '') + (t.status === 'loading' ? ' loading' : '') + (t.kind === 'ghost' ? ' ghost' : '') + (t.moved ? ' moved' : ''))
       c.style.left = p.x + 'px'; c.style.top = p.y + 'px'
       var meta = []
-      if (t.kind === 'ghost') meta.push('<button class="mini" data-add="' + esc(t.key) + '">+ add</button>')
+      if (t.kind === 'ghost') meta.push('<button class="mini" data-add="' + esc(t.path || t.key) + '">+ add</button>')
       t.prs.forEach(function (pr) { meta.push(prLink(pr)) })
       if (t.ready) meta.push('<span class="ready-tag">ready</span>')
       if (t.provides.length) meta.push('<span>⇢ ' + t.provides.length + ' provides</span>')
@@ -470,7 +473,7 @@
     function showTicket(t) {
       dtitle.innerHTML = tk(t, t.key + ' ↗') + ' · ' + esc(t.title) + ' <span class="status s-' + esc(t.status) + '" style="font-size:11px;padding:1px 8px;border:1px solid currentColor;border-radius:999px;margin-left:6px">' + esc(t.status) + '</span>'
       if (t.kind === 'ghost') {
-        dbody.innerHTML = '<div class="sec">Another ticket on the map names ' + esc(t.key) + ', but it is not on the map: its status, plan and interfaces are unknown, so links from it never count as unlocked.</div><button class="main" data-add="' + esc(t.key) + '">+ Add ' + esc(t.key) + ' to the map</button>'
+        dbody.innerHTML = '<div class="sec">Another ticket on the map names ' + esc(t.key) + ', but it is not on the map: its status, plan and interfaces are unknown, so links from it never count as unlocked.</div><button class="main" data-add="' + esc(t.path || t.key) + '">+ Add ' + esc(t.key) + ' to the map</button>'
         bindAdd(); return
       }
       var ins = edgeList.filter(function (e) { return e.to === t.key }), outs = edgeList.filter(function (e) { return e.from === t.key })

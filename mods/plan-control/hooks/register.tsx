@@ -405,9 +405,20 @@ async function collectPlan($: EngineInterface): Promise<PlanData> {
     const x = await readJson<Extracted>($, `${dirs().extracted}/${f.name}`)
     if (x) extracted.push(x)
   }
+  // the other plans in the folders of plan files on the map, so a blocker not on the map can open its file
+  const nearby: Record<string, string> = {}
+  const folders = new Set(s.map.sources.filter(x => x.kind === 'file').map(x => x.ref.replace(/\/[^/]*$/, '')))
+  for (const dir of folders) {
+    for (const f of ((await $.fs.list(dir).catch(() => [])) ?? []).filter(x => x.kind === 'file' && /\.md$/i.test(x.name))) {
+      const path = `${dir}/${f.name}`
+      if (files[path] !== undefined) continue
+      const text = await $.fs.read(path).catch(() => undefined)
+      if (typeof text === 'string') nearby[path] = text
+    }
+  }
   const prs: Record<string, PrRow[]> = {}
   for (const [repo, v] of s.prs) prs[repo] = v.rows
-  return buildPlan({ map: s.map, contexts, files, extracted, prs, ticketUrl: s.ticketUrl })
+  return buildPlan({ map: s.map, contexts, files, extracted, prs, ticketUrl: s.ticketUrl, nearby })
 }
 
 // A repo's pull requests, fetched in the background once a minute while the page is open.

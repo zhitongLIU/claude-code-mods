@@ -118,6 +118,19 @@ test('buildPlan reads local plan files', async () => {
   expect(data.tickets[0]?.blockedBy.length).toBe(2)
 })
 
+test('buildPlan lists the plan files next to one on the map, by id, so a ghost opens its file', async () => {
+  const map = { ...emptyMap('/w'), sources: [{ ref: '/w/T-2.md', kind: 'file' as const, addedAt: '' }] }
+  const data = buildPlan({
+    map,
+    contexts: {},
+    files: { '/w/T-2.md': '---\nid: T-2\nblocked_by: [CAO-301]\n---\n# Voucher' },
+    extracted: [],
+    prs: {},
+    nearby: { '/w/CAO-301-plan.md': '# Refunds', '/w/T-2 copy.md': '---\nid: T-2\n---\n# Old' },
+  })
+  expect(data.nearby).toEqual({ 'CAO-301': { path: '/w/CAO-301-plan.md', url: 'vscode://file/w/CAO-301-plan.md' } })
+})
+
 test('prsFor matches the branch, the key prefix or the title, never another key that starts the same', async () => {
   const rows = [
     { headRefName: 'cao-22-x', title: 'a', number: 1, state: 'OPEN', isDraft: false, url: 'u1' },
