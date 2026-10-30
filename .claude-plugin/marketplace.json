@@ -14,7 +14,7 @@
     {
       "name": "plan-control",
       "description": "/plan-control opens a live map of Obeya tickets and local plans: dependencies, the interfaces each provides and consumes, mismatches, pull requests. One map per session.",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "source": "./mods/plan-control"
     }
   ]
