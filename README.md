@@ -129,7 +129,7 @@ Restart Claude Code (or run `/reload-plugins`).
 | `/plan-control CAO-219` | Add and open in one go. |
 | `/plan-control add <ref> …` | Add an Obeya key (a parent brings its sub-tickets; `--only` adds it alone), an Obeya link, a plan `.md` file or a folder of them. The page's **+ add** field does the same. |
 | `/plan-control remove <id>` | Take a ticket off the map. |
-| `/plan-control refresh` | Ask Claude to read again the Obeya tickets older than 10 minutes, and re-fetch pull requests. |
+| `/plan-control refresh [all\|<id>]` | Ask Claude to read again the Obeya tickets older than 10 minutes (`all`: every one; `<id>`: that one), and re-fetch pull requests. The page's **↻ Refresh** buttons do the same. |
 | `/plan-control maps` / `attach <map>` | List the saved maps; take one over in this session (after a restart). |
 | `/plan-control off` | Stop the page. |
 
@@ -149,6 +149,7 @@ Restart Claude Code (or run `/reload-plugins`).
 
 - One map per Claude session, in `~/.plan-control/maps/<session id>.json`. Several epics can run side by side, one global tab each.
 - A mod cannot call Obeya: plan-control asks Claude to read a ticket with `obeya_get_task_context` and takes the result as it passes, into the shared cache `~/.plan-control/cache/obeya/`. Claude writes nothing back, so a ticket costs only the tokens of reading it once; any later read, by anyone in any session, refreshes it.
+- Claude is asked to read only when you add a ticket or refresh, and only once: never on a timer, so no prompt reaches the conversation you did not trigger. A sub-ticket shows its parent's status until you refresh it; a read that never came back says **not read yet** until you refresh.
 - The `plan-contract` skill teaches agents the Contract format: one bullet per interface, `- **provides** \`db registry/<sid>.json\` \`{ sid, branch }\`` or `- **consumes** \`http /api/x\` from PC-2 \`{ updatedAt:number }\``. It reads well in Obeya and survives its line joining. The older `### Provides` / `### Consumes` lists still work. A Contract bullet that matches neither format shows as **⚑ unread** on the ticket's box.
 - Plans without a Contract header can use contracts extracted once, from `~/.plan-control/extracted/*.json`, until the header exists.
 - Pull requests come from `gh pr list` on `$PLAN_CONTROL_GITHUB_ORG/<service>`, matched on the ticket key in the branch name, every minute while the page is open (none when the variable is unset).

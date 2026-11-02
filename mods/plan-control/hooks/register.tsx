@@ -2,7 +2,9 @@
 // dependencies between them, the interfaces each provides and consumes, mismatches, pull requests.
 // One map per Claude session, kept under ~/.plan-control/ (maps/, the shared Obeya cache, extracted contracts).
 // A mod cannot call Obeya: it asks Claude to read a ticket and takes the raw result as it passes (tool.call),
-// so Claude never writes anything back. The page re-reads data.js; index.html never changes.
+// so Claude never writes anything back. Claude is asked only when the person adds or refreshes a ticket, once:
+// never on a timer, so nothing reaches the conversation they did not ask for. The page re-reads data.js;
+// index.html never changes.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
@@ -11,11 +13,9 @@ import { buildPlan, emptyMap, fixPrompt, KEY_RE, parsePrAction, parseRefs, summa
 import type { Extracted, MapFile, PlanData, PrAction, PrRow, PrStatus } from './build'
 
 const STALE_MS = 10 * 60_000 // /plan-control refresh reads a cached Obeya ticket again past this age
-const ASK_AGAIN_MS = 2 * 60_000 // a ticket asked for is not asked for again sooner, unless the person says refresh
 const PR_EVERY_MS = 60_000
 const MAP_TTL_MS = 30 * 24 * 3600_000
 const READ_TOOL = 'mcp__obeya__obeya_get_task_context'
-const WRITE_TOOL = 'mcp__obeya__obeya_write_plan'
 
 // The module's own bookkeeping. A reload starts it over, and session.start reads the map back from disk.
 const s = {
@@ -27,14 +27,15 @@ const s = {
   ticketUrl: '', // $PLAN_CONTROL_TICKET_URL: where a ticket key opens, `{key}` replaced
   map: emptyMap(''),
   on: false, // the page is open and kept up to date
-  active: false, // the person used /plan-control in this session: the mod may ask Claude to read tickets
   written: false, // index.html is in the page folder
   last: '', // the data.js last written
   pending: false,
   dirty: false,
   turn: false, // a main turn is running: asking Claude waits for it to end
-  queue: new Set<string>(), // Obeya keys to ask Claude to read
-  asked: new Map<string, number>(),
+  // Obeya keys to ask Claude to read, only ever from what the person did: add or refresh. Each is asked for once;
+  // a read that never comes back is not asked for again until the person refreshes.
+  queue: new Set<string>(),
+  reading: new Set<string>(), // asked for, the read not seen yet
   mtimes: new Map<string, number>(), // plan files on the map, by path
   prs: new Map<string, { rows: PrRow[]; at: number; loading?: boolean }>(),
   statuses: new Map<string, { status?: PrStatus; at: number; loading?: boolean }>(), // `repo#number` of open pull requests
@@ -117,22 +118,12 @@ export const register: Register = on => {
       if (text.includes('## 1. IDENTITY')) {
         await $.fs.write(`${dirs().cache}/${key}.md`, text).catch(() => {})
         s.queue.delete(key)
+        s.reading.delete(key)
         await publish($)
       }
     }
     return r
   }).catch(($, e, next) => next(e)) // never in the way of the call: a failure here replays what next settled to
-
-  // A plan Claude rewrote is read again once the turn ends.
-  on('tool.call', { tool: WRITE_TOOL }, async ($, e, next) => {
-    const r = await next(e)
-    const key = String((e as unknown as { taskKey?: unknown }).taskKey ?? '')
-    if (r.deny === undefined && r.isError !== true && KEY_RE.test(key)) {
-      s.asked.delete(key)
-      s.queue.add(key)
-    }
-    return r
-  }).catch(($, e, next) => next(e))
 }
 
 // /plan-control [refs | add refs | remove id | refresh [all|<id>] | maps | attach map | off]
@@ -140,7 +131,6 @@ async function run($: EngineInterface, args: string) {
   const arg = args.trim()
   const [cmd = '', ...rest] = arg.split(/\s+/)
   const tail = rest.join(' ')
-  s.active = true
   switch (cmd.toLowerCase()) {
     case '':
       return { text: await open($) }
@@ -281,10 +271,7 @@ async function refresh($: EngineInterface, arg = '') {
   }
   for (const key of keys) {
     const st = force ? undefined : await $.fs.stat(`${dirs().cache}/${key}.md`).catch(() => undefined)
-    if (!st || now - st.mtimeMs > STALE_MS) {
-      s.asked.delete(key)
-      s.queue.add(key)
-    }
+    if (!st || now - st.mtimeMs > STALE_MS) s.queue.add(key)
   }
   for (const f of files) s.mtimes.delete(f) // the next tick sees the file as changed and redraws from disk
   s.prs.clear()
@@ -298,13 +285,15 @@ async function refresh($: EngineInterface, arg = '') {
   return `plan-control: refreshing; ${[read, ask].filter(Boolean).join('; ') || 'every ticket was read recently'}.`
 }
 
-// Asks Claude to read the queued Obeya tickets, once no turn is running; the tool.call hook does the rest.
+// Asks Claude, once, to read the queued Obeya tickets, when no turn is running; the tool.call hook does the rest.
 async function flush($: EngineInterface) {
   if (s.turn || !s.queue.size) return
-  const now = Date.now()
-  const keys = [...s.queue].filter(k => now - (s.asked.get(k) ?? 0) > ASK_AGAIN_MS).slice(0, 15)
-  if (!keys.length) return
-  for (const k of keys) s.asked.set(k, now)
+  const keys = [...s.queue].slice(0, 15)
+  for (const k of keys) {
+    s.queue.delete(k)
+    s.reading.add(k)
+  }
+  void publish($)
   await $.prompt.submit({ text: `[plan-control] Read these Obeya tickets with obeya_get_task_context (for: "implement"), one call each, then reply only "ok": ${keys.join(', ')}` })
 }
 
@@ -539,26 +528,20 @@ async function publish($: EngineInterface) {
 
 async function writePage($: EngineInterface) {
   const data = await collectPlan($)
-  const next: Band = { ...summarize(data), link: s.bridge.base ? `${s.bridge.base}/` : '' }
+  // `reading` counts the reads asked for, not the tickets never read: those wait for a refresh
+  const next: Band = { ...summarize(data), reading: s.reading.size + s.queue.size, link: s.bridge.base ? `${s.bridge.base}/` : '' }
   if (JSON.stringify(next) !== JSON.stringify(await read($, band))) await update($, band, () => next)
   if (s.on)
     for (const t of data.tickets) {
       if (t.kind === 'obeya' || /^[A-Z][A-Z0-9]+-\d+$/.test(t.key)) fetchPrs($, t.service)
       for (const p of t.prs) if (p.state === 'open' || p.state === 'draft') fetchStatus($, p.repo, p.number)
     }
-  // A sub-ticket never read is asked for once, so its Contract header and branch reach the map; only once the
-  // person used /plan-control in this session, so a map restored at start never makes Claude read on its own.
-  if (s.active) {
-    for (const t of data.tickets) if (t.kind === 'obeya' && !(await $.fs.exists(`${dirs().cache}/${t.key}.md`).catch(() => true)) && !s.asked.has(t.key)) s.queue.add(t.key)
-    for (const k of data.missing) if (!s.asked.has(k)) s.queue.add(k)
-    if (s.queue.size) $.clock.after(300, () => void flush($).catch(() => {}))
-  }
   if (!s.map.title && data.epics[0]) {
     s.map.title = `${data.epics[0].key} · ${data.epics[0].title}`
     await saveMap($)
   }
   if (!s.on) return
-  const json = JSON.stringify({ ...data, server: Boolean(s.bridge.base) }).replace(/</g, '\\u003c')
+  const json = JSON.stringify({ ...data, server: Boolean(s.bridge.base), reading: [...s.reading, ...s.queue] }).replace(/</g, '\\u003c')
   if (json === s.last) return
   const dir = dirs().page
   if (!s.written) {
@@ -627,10 +610,7 @@ function startBridge($: EngineInterface): Promise<string | undefined> {
             void publish($)
             resolve(s.bridge.base)
           } else if ('send' in msg) void $.prompt.submit({ text: msg.send }).catch(() => {})
-          else if ('add' in msg) {
-            s.active = true
-            void add($, msg.add).catch(() => {})
-          }
+          else if ('add' in msg) void add($, msg.add).catch(() => {})
           else if ('remove' in msg) void remove($, msg.remove).catch(() => {})
           else if ('move' in msg) void move($, msg.move).catch(() => {})
           else if ('refresh' in msg) void refresh($, msg.refresh).catch(() => {})

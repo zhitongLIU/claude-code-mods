@@ -375,7 +375,8 @@
       if (t.external.length) meta.push('<span title="existing interfaces it relies on">⇠ ' + t.external.length + ' existing</span>')
       if (t.bad) meta.push('<span class="bad">⚑ mismatch</span>')
       if (t.skipped && t.skipped.length) meta.push('<span class="bad" title="Contract lines the map could not read: open the box">⚑ ' + t.skipped.length + ' unread</span>')
-      var title = t.status === 'loading' ? 'reading from Obeya…' : t.title
+      // only a read asked for is "reading"; one never asked for, or lost, waits for the box's ↻ Refresh
+      var title = t.status === 'loading' ? ((PLAN.reading || []).indexOf(t.key) >= 0 ? 'reading from Obeya…' : 'not read yet: open the box and ↻ Refresh') : t.title
       c.innerHTML = '<div class="top"><span class="key">' + tk(t) + '</span>' + (t.moved ? '<button class="reset" title="put the box back (or double-click it)">↺</button>' : '') +
         '<span class="status s-' + esc(t.status) + '">' + esc(String(t.status).replace(/_/g, ' ')) + '</span></div>' +
         '<div class="title">' + esc(title) + '</div><div class="meta">' + meta.join('') + '</div>'
@@ -540,7 +541,7 @@
         return '<div class="iface"><span class="k" style="background:' + (KIND_COLOR[kindOf(c.id)] || 'var(--dim)') + '"></span><span class="id">' + esc(c.id) + '</span><span class="src">' + esc(src) + '</span>' +
           (c.delta && c.delta.length ? deltaHtml(c.delta, i && i.missing) : '') +
           (i && i.noProvider ? '<div class="warn">⚑ ' + esc(e.from) + ' does not list this interface under Provides' + (i.suggestion ? ': did you mean <code>' + esc(i.suggestion) + '</code>?' : '') + '</div>' : '') +
-          (i && i.unchecked ? '<div class="empty" style="margin-top:6px">not checked: ' + esc(e.from) + (byKey[e.from].kind === 'ghost' ? ' is not on the map' : byKey[e.from].status === 'loading' ? ' is still being read' : ' lists this interface with no field lines') + '</div>' : '') +
+          (i && i.unchecked ? '<div class="empty" style="margin-top:6px">not checked: ' + esc(e.from) + (byKey[e.from].kind === 'ghost' ? ' is not on the map' : byKey[e.from].status === 'loading' ? ' is not read yet' : ' lists this interface with no field lines') + '</div>' : '') +
           (c.existing ? '<div class="empty" style="margin-top:6px">existing, unchanged: not checked</div>' : '') +
           (c.evidence ? '<div class="ev">' + esc(c.evidence) + '</div>' : '') + '</div>'
       }).join('') : '<div class="empty">none</div>') + '</div>'
