@@ -83,6 +83,8 @@
   #drawer .bar { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
   #drawer .bar h2 { margin: 0; font-size: 15px; }
   #drawer .bar .x { margin-left: auto; cursor: pointer; color: var(--dim); font-size: 18px; }
+  #drawer .bar #drf { margin-left: auto; padding: 3px 10px; white-space: nowrap; }
+  #drawer .bar #drf:not([hidden]) + .x { margin-left: 0; }
   #drawer .body { overflow: auto; padding: 14px 20px 30px; }
   .sec { margin: 4px 0 16px; }
   .sec h3 { margin: 0 0 8px; font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
@@ -116,6 +118,10 @@
   #drawer a.pr { font-size: 12px; padding: 1px 8px; border-radius: 999px; }
   a.pr:hover { background: rgba(255,255,255,.06); }
   .pr-open { color: var(--changed); } .pr-merged { color: #b392f0; } .pr-draft { color: var(--dim); } .pr-closed { color: var(--faint); }
+  .prfix { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0 0 108px; font-size: 12.5px; }
+  .prfix button.ghostbtn { padding: 3px 10px; font-size: 12px; }
+  .prfix .said { color: var(--dim); font-size: 12px; }
+  .prfix .said.failed { color: var(--flag); }
   a.tk { color: inherit; text-decoration: none; }
   a.tk:hover { color: #9fb4ff; text-decoration: underline; }
 </style>
@@ -133,7 +139,7 @@
 <div id="stage">
   <div id="world"><svg id="edges"></svg></div>
   <div id="empty" hidden></div>
-  <div id="drawer"><div class="bar"><h2 id="dtitle"></h2><span class="x" id="dclose">✕</span></div><div class="body" id="dbody"></div></div>
+  <div id="drawer"><div class="bar"><h2 id="dtitle"></h2><button class="ghostbtn" id="drf" hidden>↻ Refresh</button><span class="x" id="dclose">✕</span></div><div class="body" id="dbody"></div></div>
 </div>
 
 <script>
@@ -314,6 +320,30 @@
       var text = (long ? pr.repo + ' ' : '') + 'PR #' + pr.number + (long ? ' · ' + pr.state : '')
       return '<a class="pr pr-' + esc(pr.state) + '" href="' + esc(pr.url) + '" target="_blank" rel="noopener" title="' + esc(pr.repo + ' #' + pr.number + ' · ' + pr.state) + '">' + esc(text) + '</a>'
     }
+    // What is wrong with an open pull request, each with the fix the page can ask for.
+    var PR_FIX = {
+      review: { tag: 'changes requested', button: 'Ask Claude to address the review', title: 'Claude hands it to a subagent, which reads the review comments, changes the code and pushes; nothing is replied on GitHub until you confirm' },
+      conflict: { tag: 'conflicts with ', button: 'Ask Claude to resolve the conflict', title: 'Claude hands it to a subagent, which rebases on the base branch, resolves the conflicts and pushes' },
+      update: { tag: ' behind ', button: 'Rebase on GitHub', title: 'gh pr update-branch --rebase: GitHub rebases the branch on its base, no Claude. A local checkout of the branch then needs a pull --rebase' },
+    }
+    function prIssues(pr) {
+      var h = pr.health, out = []
+      if (!h) return out
+      if (h.changesRequested) out.push({ kind: 'review', text: PR_FIX.review.tag })
+      if (h.conflict) out.push({ kind: 'conflict', text: PR_FIX.conflict.tag + h.base })
+      if (h.behind) out.push({ kind: 'update', text: h.behind + ' commit' + (h.behind === 1 ? '' : 's') + PR_FIX.update.tag + h.base })
+      return out
+    }
+    var ACTION_SAID = { running: 'GitHub is rebasing…', sent: 'sent to Claude', done: 'done', failed: 'failed' }
+    function prIssuesHtml(pr) {
+      var list = prIssues(pr)
+      return list.map(function (x) {
+        var a = pr.action && pr.action.kind === x.kind ? pr.action : null, busy = a && a.state === 'running'
+        return '<div class="prfix"><span class="bad">⚑ ' + esc(pr.repo + ' #' + pr.number) + ': ' + esc(x.text) + '</span>' +
+          '<button class="ghostbtn" data-pr="' + esc(x.kind + ' ' + pr.repo + ' ' + pr.number) + '" title="' + esc(PR_FIX[x.kind].title) + '"' + (busy ? ' disabled style="opacity:.4;cursor:default"' : '') + '>' + esc(PR_FIX[x.kind].button) + '</button>' +
+          (a ? '<span class="said ' + esc(a.state) + '">' + esc(ACTION_SAID[a.state] || a.state) + (a.message ? ': ' + esc(a.message) : '') + '</span>' : '') + '</div>'
+      }).join('')
+    }
 
     for (var d = 0; d <= maxDepth && tickets.length; d++) {
       var ct = el('div', 'col-title', d === 0 ? 'can start' : 'wave ' + (d + 1))
@@ -333,7 +363,13 @@
       c.style.left = p.x + 'px'; c.style.top = p.y + 'px'
       var meta = []
       if (t.kind === 'ghost') meta.push('<button class="mini" data-add="' + esc(t.path || t.key) + '">+ add</button>')
-      t.prs.forEach(function (pr) { meta.push(prLink(pr)) })
+      t.prs.forEach(function (pr) {
+        meta.push(prLink(pr))
+        // one short badge per pull request, the card is narrow: the drawer has the words and the buttons
+        var list = prIssues(pr)
+        if (list.length) meta.push('<span class="bad" title="' + esc('#' + pr.number + ': ' + list.map(function (x) { return x.text }).join(', ') + ' (open the box to fix it)') + '">⚑ ' +
+          esc(list.map(function (x) { return x.kind === 'update' ? '↓' + pr.health.behind : x.kind === 'review' ? 'review' : 'conflict' }).join(' · ')) + '</span>')
+      })
       if (t.ready) meta.push('<span class="ready-tag">ready</span>')
       if (t.provides.length) meta.push('<span>⇢ ' + t.provides.length + ' provides</span>')
       if (t.external.length) meta.push('<span title="existing interfaces it relies on">⇠ ' + t.external.length + ' existing</span>')
@@ -460,7 +496,7 @@
       Object.keys(KIND_COLOR).filter(function (k) { return k !== 'env' }).map(function (k) { return '<span><span class="k" style="background:' + KIND_COLOR[k] + '"></span>' + k + '</span>' }).join('')
 
     // ---- drawer ----
-    var drawer = document.getElementById('drawer'), dtitle = document.getElementById('dtitle'), dbody = document.getElementById('dbody')
+    var drawer = document.getElementById('drawer'), dtitle = document.getElementById('dtitle'), dbody = document.getElementById('dbody'), drf = document.getElementById('drf')
     function deltaHtml(lines, missing) {
       if (!lines || !lines.length) return '<div class="delta"><div class="ctx">(no field change listed)</div></div>'
       return '<div class="delta">' + lines.map(function (l) {
@@ -477,11 +513,15 @@
         dbody.innerHTML = '<div class="sec">Another ticket on the map names ' + esc(t.key) + ', but it is not on the map: its status, plan and interfaces are unknown, so links from it never count as unlocked.</div><button class="main" data-add="' + esc(t.path || t.key) + '">+ Add ' + esc(t.key) + ' to the map</button>'
         bindAdd(); return
       }
+      drf.hidden = false
+      drf.title = t.path ? 're-read ' + t.path + ' from disk' : 'ask Claude to read ' + t.key + ' from Obeya again'
+      drf.onclick = function () { refresh(t.path || t.key) }
       var ins = edgeList.filter(function (e) { return e.to === t.key }), outs = edgeList.filter(function (e) { return e.from === t.key })
       var h = '<div class="sec"><h3>Contract</h3>' +
         '<div class="row"><span class="lbl">Service</span><code>' + esc(t.service) + '</code></div>' +
         '<div class="row"><span class="lbl">Source</span><span class="' + (t.contractSource === 'header' ? '' : 'empty') + '">' + esc(t.kind === 'file' ? t.path : SOURCE[t.contractSource] || '') + '</span></div>' +
         '<div class="row"><span class="lbl">Pull requests</span><span>' + (t.prs.length ? t.prs.map(function (pr) { return prLink(pr, true) }).join(' ') : '<span class="empty">none opened</span>') + '</span></div>' +
+        t.prs.map(prIssuesHtml).join('') +
         '<div class="row"><span class="lbl">Blocked by</span><span>' + (t.blockedBy.length ? t.blockedBy.map(depPill).join('') : '<span class="empty">none</span>') + '</span></div>' +
         '<div class="row"><span class="lbl">Unblocks</span><span>' + (outs.length ? outs.map(function (e) { return '<span class="pill">' + tkKey(e.to) + '</span>' }).join('') : '<span class="empty">none</span>') + '</span></div>' +
         (t.ready ? '<div class="row"><span class="lbl"></span><span class="ready-tag">every blocker is done — can start now</span></div>' : '') + '</div>'
@@ -505,10 +545,15 @@
           (c.evidence ? '<div class="ev">' + esc(c.evidence) + '</div>' : '') + '</div>'
       }).join('') : '<div class="empty">none</div>') + '</div>'
       if (t.files.length) h += '<div class="sec files"><h3>Files named in the plan</h3>' + t.files.map(function (f) { return '<code>' + esc(f) + '</code>' }).join('') + '</div>'
-      h += '<div class="sec"><button class="ghostbtn" id="rf">↻ Refresh ' + esc(t.key) + '</button> ' +
-        '<button class="ghostbtn" id="rm">Remove ' + esc(t.key) + ' from the map</button></div>'
+      h += '<div class="sec"><button class="ghostbtn" id="rm">Remove ' + esc(t.key) + ' from the map</button></div>'
       dbody.innerHTML = h
-      document.getElementById('rf').addEventListener('click', function () { refresh(t.path || t.key) })
+      dbody.querySelectorAll('[data-pr]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var what = b.getAttribute('data-pr')
+          b.disabled = true; b.style.opacity = '.4'
+          post('pr', { text: what }).then(function () { note(what.split(' ')[0] === 'update' ? 'asked GitHub to rebase ' + what.split(' ').slice(1).join(' #') : 'sent to Claude: ' + what.split(' ').slice(1).join(' #')) }, function () { b.disabled = false; b.style.opacity = ''; note('No server: the page cannot reach this Claude session') })
+        })
+      })
       document.getElementById('rm').addEventListener('click', function () {
         post('remove', { id: t.path || t.key }).then(function () { select(null); note('removed: ' + t.key) }, function () { note('No server: run /plan-control remove ' + t.key) })
       })
@@ -639,6 +684,7 @@
       if (s && s.ticket && !byKey[s.ticket]) s = null
       if (s && s.edge && !edges[s.edge]) s = null
       ui.current = s
+      drf.hidden = true // showTicket shows it again for a ticket that is on the map
       if (!s) { drawer.classList.remove('open'); highlight(null); return }
       if (s.issues) showIssues()
       else if (s.ticket) showTicket(byKey[s.ticket])

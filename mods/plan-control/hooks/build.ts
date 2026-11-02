@@ -22,7 +22,15 @@ export type MapFile = {
 export type ExtractedTicket = { key: string; service?: string; blockedBy?: Dep[]; provides?: Provide[]; consumes?: Consume[]; files?: string[] }
 export type Extracted = { aliases?: Record<string, string>; serviceOrder?: string[]; tickets?: ExtractedTicket[] }
 export type PrRow = { headRefName: string; title: string; number: number; state: string; isDraft: boolean; url: string }
-export type PR = { repo: string; number: number; state: string; url: string }
+export type PR = { repo: string; number: number; state: string; url: string; health?: Health; action?: PrAction }
+
+// What `gh pr view` says of an open pull request, and how many commits of its base the branch lacks.
+export type PrStatus = { headRefName: string; baseRefName: string; reviewDecision?: string; mergeable?: string; behindBy?: number }
+// What the page offers to fix. `behind` is 0 while the branch conflicts: resolving the conflict brings it up to date.
+export type Health = { head: string; base: string; changesRequested: boolean; conflict: boolean; behind: number; unknown: boolean }
+export type PrActionKind = 'review' | 'conflict' | 'update'
+// The last fix asked for on a pull request: sent to Claude, or GitHub rebasing the branch (`update`).
+export type PrAction = { kind: PrActionKind; state: 'running' | 'sent' | 'done' | 'failed'; message?: string }
 
 export type Ticket = {
   key: string
@@ -72,6 +80,8 @@ export type BuildInput = {
   files: Record<string, string> // a plan file's path → its text
   extracted: Extracted[]
   prs: Record<string, PrRow[]> // repo → its pull requests
+  statuses?: Record<string, PrStatus> // `repo#number` → the state of an open pull request
+  actions?: Record<string, PrAction> // `repo#number` → the last fix asked for
   ticketUrl?: string // where a ticket key opens, `{key}` replaced; TICKET_URL when unset
   nearby?: Record<string, string> // path → text of the plan files next to one on the map but not on it
 }
@@ -89,6 +99,63 @@ export function prsFor(rows: PrRow[], repo: string, key: string, branch?: string
   return rows
     .filter(p => p.headRefName === branch || p.headRefName.toLowerCase().startsWith(`${k}-`) || named.test(p.title))
     .map(p => ({ repo, number: p.number, state: p.isDraft ? 'draft' : p.state.toLowerCase(), url: p.url }))
+}
+
+export function prHealth(st: PrStatus): Health {
+  const unknown = st.mergeable !== 'MERGEABLE' && st.mergeable !== 'CONFLICTING'
+  const conflict = st.mergeable === 'CONFLICTING'
+  return {
+    head: st.headRefName,
+    base: st.baseRefName,
+    changesRequested: st.reviewDecision === 'CHANGES_REQUESTED',
+    conflict,
+    behind: conflict || unknown ? 0 : Math.max(0, st.behindBy ?? 0),
+    unknown,
+  }
+}
+
+// A pull request's health and last fix, for an open (or draft) one whose state has been fetched.
+function withHealth(pr: PR, input: BuildInput): PR {
+  if (pr.state !== 'open' && pr.state !== 'draft') return pr
+  const id = `${pr.repo}#${pr.number}`
+  const st = input.statuses?.[id]
+  const action = input.actions?.[id]
+  return { ...pr, ...(st ? { health: prHealth(st) } : {}), ...(action ? { action } : {}) }
+}
+
+// What the page posts to fix a pull request: "update api 12", "review api 12" or "conflict api 12".
+export function parsePrAction(text: string): { kind: PrActionKind; repo: string; number: number } | undefined {
+  const m = /^(update|review|conflict) ([\w.-]+) (\d+)$/.exec(text.trim())
+  if (!m || m[2]?.startsWith('.')) return undefined
+  return { kind: m[1] as PrActionKind, repo: m[2] as string, number: Number(m[3]) }
+}
+
+// The prompt that asks Claude to fix a pull request: its review comments, or its conflict with the base.
+// Claude hands the work to a subagent, so the reading, editing and test output stay out of the main conversation;
+// a subagent cannot ask the person anything, so it stops and reports where it would have asked.
+export function fixPrompt(kind: 'review' | 'conflict', pr: { org: string; repo: string; number: number; head: string; base: string; key: string; url: string }) {
+  const R = `${pr.org}/${pr.repo}`
+  const head = `${R}#${pr.number} (${pr.url}) of ticket ${pr.key}, branch ${pr.head} into ${pr.base}`
+  const brief =
+    kind === 'review'
+      ? [
+          `${head}, has reviews that request changes.`,
+          `Read them: \`gh pr view ${pr.number} -R ${R} --comments\`, and the inline ones: \`gh api repos/${R}/pulls/${pr.number}/comments\`.`,
+          `In a checkout of ${pr.head} (find or create a worktree of ${pr.repo}), make the changes, run the tests, commit and push.`,
+          'Do not reply on GitHub or resolve a thread. Leave unchanged any comment you disagree with, or that needs a decision, and say why in the report.',
+          'Report, comment by comment, what you changed or left, and the tests you ran.',
+        ]
+      : [
+          `${head}, conflicts with ${pr.base}.`,
+          `In a checkout of ${pr.head} (find or create a worktree of ${pr.repo}): git fetch origin, rebase onto origin/${pr.base}, resolve each conflict keeping what both sides meant, run the tests, then push with --force-with-lease.`,
+          'If a conflict needs a product decision, do not push: abort the rebase and report the conflict and the choices.',
+          'Report the conflicts you resolved and how, the tests you ran, and whether you pushed.',
+        ]
+  return [
+    `[plan-control] Hand this to a subagent (the Agent tool, general-purpose) with the brief below, wait for it, then give me its report.${kind === 'review' ? ' Wait for my go before anyone replies on GitHub.' : ''}`,
+    '',
+    ...brief.map(l => `> ${l}`),
+  ].join('\n')
 }
 
 function serviceOf(title: string) {
@@ -138,7 +205,7 @@ export function buildPlan(input: BuildInput): PlanData {
       provides: contract ? contract.provides : (old?.provides ?? []),
       consumes: contract ? contract.consumes : (old?.consumes ?? []),
       files: old?.files ?? [],
-      prs: prsFor(prs[service] ?? [], service, key, c?.branch),
+      prs: prsFor(prs[service] ?? [], service, key, c?.branch).map(p => withHealth(p, input)),
     })
   }
 
@@ -163,7 +230,7 @@ export function buildPlan(input: BuildInput): PlanData {
         provides: p.contract?.provides ?? [],
         consumes: p.contract?.consumes ?? [],
         files: [],
-        prs: KEY_RE.test(p.id) ? prsFor(prs[service] ?? [], service, p.id) : [],
+        prs: KEY_RE.test(p.id) ? prsFor(prs[service] ?? [], service, p.id).map(x => withHealth(x, input)) : [],
       })
       continue
     }

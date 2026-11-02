@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { buildPlan, checkConsume, emptyMap, fieldOf, parseRefs, prsFor, summarize } from '../hooks/build'
+import { buildPlan, checkConsume, emptyMap, fieldOf, fixPrompt, parsePrAction, parseRefs, prHealth, prsFor, summarize } from '../hooks/build'
 import type { Ticket } from '../hooks/build'
 import { parseContract, parseLocalPlan, parseTaskContext } from '../hooks/contract'
 import { applyMove, parseLine, portFor, textOf } from '../hooks/register'
@@ -175,6 +175,63 @@ test('prsFor matches the branch, the key prefix or the title, never another key 
     { headRefName: 'other', title: 'fix (CAO-220)', number: 3, state: 'OPEN', isDraft: true, url: 'u3' },
   ]
   expect(prsFor(rows, 'r', 'CAO-220').map(p => [p.number, p.state])).toEqual([[2, 'merged'], [3, 'draft']])
+})
+
+test('prHealth reads requested changes, a conflict with the base, and how far behind it the branch is', async () => {
+  const base = { headRefName: 'cao-1-x', baseRefName: 'main' }
+  expect(prHealth({ ...base, reviewDecision: 'CHANGES_REQUESTED', mergeable: 'MERGEABLE', behindBy: 0 })).toEqual({ head: 'cao-1-x', base: 'main', changesRequested: true, conflict: false, behind: 0, unknown: false })
+  // a conflict is fixed by Claude: the branch being behind too is part of it, no separate rebase
+  expect(prHealth({ ...base, reviewDecision: 'APPROVED', mergeable: 'CONFLICTING', behindBy: 4 })).toMatchObject({ changesRequested: false, conflict: true, behind: 0 })
+  expect(prHealth({ ...base, mergeable: 'MERGEABLE', behindBy: 3 })).toMatchObject({ conflict: false, behind: 3, unknown: false })
+  // GitHub has not computed mergeability yet: nothing is offered until it has
+  expect(prHealth({ ...base, mergeable: 'UNKNOWN', behindBy: 3 })).toMatchObject({ conflict: false, behind: 0, unknown: true })
+})
+
+test('buildPlan puts the health and the last action on an open pull request only', async () => {
+  const map = { ...emptyMap('/w'), sources: [{ ref: '/p/CAO-9.md', kind: 'file' as const, addedAt: '' }] }
+  const rows = [
+    { headRefName: 'cao-9-a', title: 'a', number: 1, state: 'OPEN', isDraft: false, url: 'u1' },
+    { headRefName: 'cao-9-b', title: 'b', number: 2, state: 'MERGED', isDraft: false, url: 'u2' },
+  ]
+  const st = { headRefName: 'cao-9-a', baseRefName: 'main', mergeable: 'MERGEABLE', behindBy: 2 }
+  const data = buildPlan({
+    map,
+    contexts: {},
+    files: { '/p/CAO-9.md': '---\nid: CAO-9\nservice: api\n---\n# Nine\n' },
+    extracted: [],
+    prs: { api: rows },
+    statuses: { 'api#1': st, 'api#2': st },
+    actions: { 'api#1': { kind: 'update', state: 'failed', message: 'nope' } },
+  })
+  const [open, merged] = data.tickets[0]?.prs ?? []
+  expect(open?.health).toMatchObject({ behind: 2 })
+  expect(open?.action).toEqual({ kind: 'update', state: 'failed', message: 'nope' })
+  expect(merged?.health).toBe(undefined)
+})
+
+test('parsePrAction takes only the three actions on a well-formed repo and number', async () => {
+  expect(parsePrAction('update api 12')).toEqual({ kind: 'update', repo: 'api', number: 12 })
+  expect(parsePrAction('review web-app 3')).toEqual({ kind: 'review', repo: 'web-app', number: 3 })
+  expect(parsePrAction('conflict api 7')).toEqual({ kind: 'conflict', repo: 'api', number: 7 })
+  expect(parsePrAction('merge api 7')).toBe(undefined)
+  expect(parsePrAction('update ../x 7')).toBe(undefined)
+  expect(parsePrAction('update api 7; rm')).toBe(undefined)
+  expect(parseLine('{"pr":"update api 12"}')).toEqual({ pr: 'update api 12' })
+})
+
+test('fixPrompt names the pull request, its branches and ticket, and what Claude must not do on its own', async () => {
+  const pr = { org: 'acme', repo: 'api', number: 12, head: 'cao-9-a', base: 'main', key: 'CAO-9', url: 'https://github.com/acme/api/pull/12' }
+  const review = fixPrompt('review', pr)
+  expect(review).toContain('acme/api#12')
+  expect(review).toContain('cao-9-a')
+  expect(review).toContain('CAO-9')
+  expect(review).toContain('gh pr view 12 -R acme/api --comments')
+  expect(review).toContain('Do not reply on GitHub')
+  expect(review).toContain('Hand this to a subagent')
+  const conflict = fixPrompt('conflict', pr)
+  expect(conflict).toContain('Hand this to a subagent')
+  expect(conflict).toContain('origin/main')
+  expect(conflict).toContain('--force-with-lease')
 })
 
 test('helpers: textOf, parseLine, portFor', async () => {

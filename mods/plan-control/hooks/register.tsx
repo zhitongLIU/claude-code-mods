@@ -7,8 +7,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Band } from '../types'
-import { buildPlan, emptyMap, KEY_RE, parseRefs, summarize } from './build'
-import type { Extracted, MapFile, PlanData, PrRow } from './build'
+import { buildPlan, emptyMap, fixPrompt, KEY_RE, parsePrAction, parseRefs, summarize } from './build'
+import type { Extracted, MapFile, PlanData, PrAction, PrRow, PrStatus } from './build'
 
 const STALE_MS = 10 * 60_000 // /plan-control refresh reads a cached Obeya ticket again past this age
 const ASK_AGAIN_MS = 2 * 60_000 // a ticket asked for is not asked for again sooner, unless the person says refresh
@@ -37,6 +37,8 @@ const s = {
   asked: new Map<string, number>(),
   mtimes: new Map<string, number>(), // plan files on the map, by path
   prs: new Map<string, { rows: PrRow[]; at: number; loading?: boolean }>(),
+  statuses: new Map<string, { status?: PrStatus; at: number; loading?: boolean }>(), // `repo#number` of open pull requests
+  actions: new Map<string, PrAction>(), // `repo#number` → the last fix asked for from the page
   bridge: { base: undefined as string | undefined, starting: undefined as Promise<string | undefined> | undefined, stop: false },
 }
 
@@ -286,6 +288,7 @@ async function refresh($: EngineInterface, arg = '') {
   }
   for (const f of files) s.mtimes.delete(f) // the next tick sees the file as changed and redraws from disk
   s.prs.clear()
+  s.statuses.clear()
   s.last = '' // redraw even when nothing changed, so the page shows the refresh happened
   await publish($)
   $.clock.after(300, () => void flush($).catch(() => {}))
@@ -418,7 +421,9 @@ async function collectPlan($: EngineInterface): Promise<PlanData> {
   }
   const prs: Record<string, PrRow[]> = {}
   for (const [repo, v] of s.prs) prs[repo] = v.rows
-  return buildPlan({ map: s.map, contexts, files, extracted, prs, ticketUrl: s.ticketUrl, nearby })
+  const statuses: Record<string, PrStatus> = {}
+  for (const [id, v] of s.statuses) if (v.status) statuses[id] = v.status
+  return buildPlan({ map: s.map, contexts, files, extracted, prs, statuses, actions: Object.fromEntries(s.actions), ticketUrl: s.ticketUrl, nearby })
 }
 
 // A repo's pull requests, fetched in the background once a minute while the page is open.
@@ -440,6 +445,62 @@ function fetchPrs($: EngineInterface, repo: string) {
     .catch(() => s.prs.set(repo, { rows: had?.rows ?? [], at: Date.now() }))
 }
 
+// A path piece of a GitHub URL: `/` and `:` stay, so `owner:feature/x` reads as a fork's branch.
+const urlPiece = (x: string) => encodeURIComponent(x).replace(/%2F/gi, '/').replace(/%3A/gi, ':')
+
+// An open pull request's reviews, mergeability and how far behind its base it is, once a minute while the page is
+// open; sooner while GitHub is still computing whether it merges.
+function fetchStatus($: EngineInterface, repo: string, number: number) {
+  const id = `${repo}#${number}`
+  const had = s.statuses.get(id)
+  if (!s.org || had?.loading || (had && Date.now() - had.at < PR_EVERY_MS)) return
+  s.statuses.set(id, { status: had?.status, at: had?.at ?? 0, loading: true })
+  const R = `${s.org}/${repo}`
+  void (async () => {
+    let status = had?.status
+    const v = await $.process.run(['gh', 'pr', 'view', String(number), '-R', R, '--json', 'headRefName,baseRefName,reviewDecision,mergeable,headRepositoryOwner'], { timeoutMs: 30_000 })
+    if (v.exitCode === 0) {
+      const j = JSON.parse(v.stdout) as { headRefName: string; baseRefName: string; reviewDecision?: string; mergeable?: string; headRepositoryOwner?: { login?: string } }
+      const owner = j.headRepositoryOwner?.login
+      const head = owner && owner.toLowerCase() !== s.org.toLowerCase() ? `${owner}:${j.headRefName}` : j.headRefName
+      const c = await $.process.run(['gh', 'api', `repos/${R}/compare/${urlPiece(j.baseRefName)}...${urlPiece(head)}`, '--jq', '.behind_by'], { timeoutMs: 30_000 })
+      const behind = c.exitCode === 0 ? Number(c.stdout.trim()) : NaN
+      status = { headRefName: j.headRefName, baseRefName: j.baseRefName, reviewDecision: j.reviewDecision || undefined, mergeable: j.mergeable, behindBy: Number.isFinite(behind) ? behind : undefined }
+    }
+    const computing = status?.mergeable === 'UNKNOWN'
+    s.statuses.set(id, { status, at: computing ? Date.now() - PR_EVERY_MS + 10_000 : Date.now() })
+    if (JSON.stringify(status) !== JSON.stringify(had?.status)) void publish($)
+  })().catch(() => s.statuses.set(id, { status: had?.status, at: Date.now() }))
+}
+
+// A fix asked for on the page: `update` has GitHub rebase the branch on its base (no Claude, nothing pushed from
+// here); `review` and `conflict` ask Claude. Only for a pull request of a ticket on the map whose state is known.
+async function prAction($: EngineInterface, text: string) {
+  const a = parsePrAction(text)
+  if (!a || !s.org) return
+  const data = await collectPlan($)
+  const t = data.tickets.find(x => x.prs.some(p => p.repo === a.repo && p.number === a.number))
+  const pr = t?.prs.find(p => p.repo === a.repo && p.number === a.number)
+  if (!t || !pr?.health) return
+  const id = `${a.repo}#${a.number}`
+  if (s.actions.get(id)?.state === 'running') return
+  if (a.kind === 'update') {
+    s.actions.set(id, { kind: 'update', state: 'running' })
+    await publish($)
+    const r = await $.process
+      .run(['gh', 'pr', 'update-branch', String(a.number), '-R', `${s.org}/${a.repo}`, '--rebase'], { timeoutMs: 60_000 })
+      .catch(e => ({ exitCode: 1, stdout: '', stderr: String(e) }))
+    const said = (r.exitCode === 0 ? r.stdout || r.stderr : r.stderr || r.stdout).trim().split('\n').pop() ?? ''
+    s.actions.set(id, { kind: 'update', state: r.exitCode === 0 ? 'done' : 'failed', message: said.slice(0, 300) })
+    s.statuses.delete(id) // read again: the branch moved
+    await publish($)
+    return
+  }
+  await $.prompt.submit({ text: fixPrompt(a.kind, { org: s.org, repo: a.repo, number: a.number, head: pr.health.head, base: pr.health.base, key: t.key, url: pr.url }) })
+  s.actions.set(id, { kind: a.kind, state: 'sent' })
+  await publish($)
+}
+
 // ---- the page ----
 
 async function tick($: EngineInterface) {
@@ -454,7 +515,8 @@ async function tick($: EngineInterface) {
       changed = true
     }
   }
-  if (changed || [...s.prs.values()].some(v => Date.now() - v.at >= PR_EVERY_MS)) await publish($)
+  const stale = (v: { at: number }) => Date.now() - v.at >= PR_EVERY_MS
+  if (changed || [...s.prs.values()].some(stale) || [...s.statuses.values()].some(stale)) await publish($)
 }
 
 // Rebuilds the map about once a second at most: the band always, data.js while the page is open.
@@ -479,7 +541,11 @@ async function writePage($: EngineInterface) {
   const data = await collectPlan($)
   const next: Band = { ...summarize(data), link: s.bridge.base ? `${s.bridge.base}/` : '' }
   if (JSON.stringify(next) !== JSON.stringify(await read($, band))) await update($, band, () => next)
-  if (s.on) for (const t of data.tickets) if (t.kind === 'obeya' || /^[A-Z][A-Z0-9]+-\d+$/.test(t.key)) fetchPrs($, t.service)
+  if (s.on)
+    for (const t of data.tickets) {
+      if (t.kind === 'obeya' || /^[A-Z][A-Z0-9]+-\d+$/.test(t.key)) fetchPrs($, t.service)
+      for (const p of t.prs) if (p.state === 'open' || p.state === 'draft') fetchStatus($, p.repo, p.number)
+    }
   // A sub-ticket never read is asked for once, so its Contract header and branch reach the map; only once the
   // person used /plan-control in this session, so a map restored at start never makes Claude read on its own.
   if (s.active) {
@@ -517,7 +583,7 @@ export function textOf(response: unknown): string {
 }
 
 // One line of the server's stdout, or undefined for anything else.
-export function parseLine(line: string): { ready: true; port: number; token: string } | { send: string } | { add: string } | { remove: string } | { move: string } | { refresh: string } | undefined {
+export function parseLine(line: string): { ready: true; port: number; token: string } | { send: string } | { add: string } | { remove: string } | { move: string } | { refresh: string } | { pr: string } | undefined {
   try {
     const v = JSON.parse(line) as Record<string, unknown>
     if (v.ready === true && typeof v.port === 'number' && typeof v.token === 'string' && /^\w+$/.test(v.token)) return { ready: true, port: v.port, token: v.token }
@@ -526,6 +592,7 @@ export function parseLine(line: string): { ready: true; port: number; token: str
     if (typeof v.remove === 'string') return { remove: v.remove }
     if (typeof v.move === 'string') return { move: v.move }
     if (typeof v.refresh === 'string') return { refresh: v.refresh }
+    if (typeof v.pr === 'string') return { pr: v.pr }
   } catch {}
   return undefined
 }
@@ -567,6 +634,7 @@ function startBridge($: EngineInterface): Promise<string | undefined> {
           else if ('remove' in msg) void remove($, msg.remove).catch(() => {})
           else if ('move' in msg) void move($, msg.move).catch(() => {})
           else if ('refresh' in msg) void refresh($, msg.refresh).catch(() => {})
+          else if ('pr' in msg) void prAction($, msg.pr).catch(() => {})
         }
       }
     })()

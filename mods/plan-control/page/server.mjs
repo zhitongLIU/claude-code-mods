@@ -5,6 +5,7 @@
 //   POST /<token>/remove { id }    → { remove }  a ticket to take off the map
 //   POST /<token>/refresh { id }   → { refresh } "all" or one key, to read again from Obeya
 //   POST /<token>/move   { text }  → { move }"KEY x y" where a box was dropped, "KEY reset" or "* reset"
+//   POST /<token>/pr     { text }  → { pr }      "update|review|conflict <repo> <number>": fix a pull request
 // Usage: node server.mjs <page dir> <preferred port>
 import http from 'node:http'
 import fs from 'node:fs'
@@ -16,7 +17,7 @@ let want = Number(process.argv[3]) || 0
 const token = crypto.randomBytes(6).toString('hex')
 const TYPES = { 'index.html': 'text/html; charset=utf-8', 'data.js': 'text/javascript; charset=utf-8' }
 const MAX = 400000
-const FIELDS = { send: 'text', add: 'text', remove: 'id', move: 'text', refresh: 'id' }
+const FIELDS = { send: 'text', add: 'text', remove: 'id', move: 'text', refresh: 'id', pr: 'text' }
 
 const out = o => process.stdout.write(JSON.stringify(o) + '\n')
 process.stdout.on('error', () => process.exit(0))
