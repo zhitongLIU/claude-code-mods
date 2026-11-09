@@ -260,7 +260,7 @@ describe('mission-control', () => {
       if (cmd.startsWith('ls-files')) return 'src/new.ts\0'
       if (cmd.startsWith('diff -U3')) return '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n'
       if (cmd === 'rev-parse --abbrev-ref HEAD') return 'feat/otp\n'
-      if (cmd === 'pr view --json number,url') return '{"number":12,"url":"https://github.com/acme/app/pull/12"}'
+      if (cmd === 'pr view --json number,url,state') return '{"number":12,"url":"https://github.com/acme/app/pull/12","state":"OPEN"}'
       return undefined // an unknown base: git fails
     }
     const { runs, writes, clock, models } = engine(on, { git })
@@ -293,6 +293,37 @@ describe('mission-control', () => {
     const after = writes['/tmp/mission-control/s/data.js'] ?? ''
     expect(after).not.toContain('"state":"changed"')
     expect(after).toContain('"id":"/repo/src/pages/login.tsx"')
+  })
+  test('the page links only an open pull request, and follows a checkout to another branch', async ($, on) => {
+    let branch = 'staging'
+    const git = (argv: string[]) => {
+      const cmd = argv.slice(1).join(' ')
+      if (cmd === 'rev-parse --abbrev-ref HEAD') return `${branch}\n`
+      if (cmd === 'pr view --json number,url,state') {
+        return branch === 'staging'
+          ? '{"number":72,"url":"https://github.com/acme/app/pull/72","state":"MERGED"}' // years old, head branch staging
+          : '{"number":90,"url":"https://github.com/acme/app/pull/90","state":"OPEN"}'
+      }
+      return undefined
+    }
+    const { writes, clock } = engine(on, { git })
+    const whereOf = () => JSON.parse((writes['/tmp/mission-control/s/data.js'] ?? '').replace(/^window\.MAP = /, '').replace(/;$/, '')).where
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/repo' } as any)
+    await $.command.run({ command: 'mission', args: '' } as any)
+    await clock.advance(1600)
+    expect(whereOf()).toEqual({ branch: 'staging' }) // the merged #72 is not this branch's pull request
+
+    branch = 'fix/n-plus-one'
+    await $.turn.start({ text: 'checkout and open the PR', turnId: 't1' } as any)
+    await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1 } as any)
+    await clock.advance(1600)
+    expect(whereOf()).toEqual({ branch: 'fix/n-plus-one', pr: { number: 90, url: 'https://github.com/acme/app/pull/90' } })
+
+    branch = 'fix/other'
+    await $.turn.start({ text: 'switch again', turnId: 't2' } as any)
+    await $.turn.complete({ reason: 'answer', answer: 'done', durationMs: 1 } as any)
+    await clock.advance(1600)
+    expect(whereOf().branch).toBe('fix/other') // a pull request already shown does not pin the old branch
   })
   test('/mission <PR link> reads a pull request link through gh alone, from any folder', async ($, on) => {
     const sha = 'a'.repeat(40)

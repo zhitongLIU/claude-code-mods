@@ -262,10 +262,15 @@ async function run($: EngineInterface, args: string) {
 }
 
 // The page's branch and pull request, read again when a turn ends: a pull request opened (or a branch switched)
-// since /mission ran shows up. A review's own base is left alone, and gh is asked only while there is no pull request.
+// since /mission ran shows up. A review's own base is left alone, and gh is asked only while there is no pull request
+// or the branch changed (a pull request found on the old branch would otherwise stick after a checkout).
 async function refreshWhere($: EngineInterface) {
   const now = await read($, where)
-  if (now.base || (now.branch && now.pr)) return
+  if (now.base) return
+  if (now.branch && now.pr) {
+    const b = await $.process.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], { timeoutMs: 10_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
+    if (b.exitCode !== 0 || b.stdout.trim() === now.branch) return
+  }
   const next = await liveWhere($)
   if (next.branch !== now.branch || next.pr?.number !== now.pr?.number) {
     await update($, where, () => next)
@@ -359,11 +364,12 @@ async function liveWhere($: EngineInterface): Promise<MissionWhere> {
     return { branch: sha.exitCode === 0 ? `detached at ${sha.stdout.trim()}` : '' } // no branch, so no pull request
   }
   if (!branch) return { branch: '' }
-  const view = await $.process.run(['gh', 'pr', 'view', '--json', 'number,url'], { timeoutMs: 15_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
+  const view = await $.process.run(['gh', 'pr', 'view', '--json', 'number,url,state'], { timeoutMs: 15_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
   let pr: MissionWhere['pr']
   try {
-    const v = JSON.parse(view.stdout) as { number?: unknown; url?: unknown }
-    if (view.exitCode === 0 && typeof v.number === 'number') pr = prOf(v.number, v.url)
+    const v = JSON.parse(view.stdout) as { number?: unknown; url?: unknown; state?: unknown }
+    // gh also returns merged or closed pull requests: a long-lived branch such as staging would show one from years ago.
+    if (view.exitCode === 0 && typeof v.number === 'number' && v.state === 'OPEN') pr = prOf(v.number, v.url)
   } catch {}
   return { branch, pr }
 }
