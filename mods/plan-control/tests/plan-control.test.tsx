@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { buildPlan, checkConsume, emptyMap, fieldOf, fixPrompt, parsePrAction, parseRefs, prHealth, prsFor, summarize } from '../hooks/build'
+import { buildPlan, checkConsume, emptyMap, fieldOf, fixPrompt, parentOf, parsePrAction, parseRefs, prHealth, prsFor, summarize } from '../hooks/build'
 import type { Ticket } from '../hooks/build'
 import { parseContract, parseLocalPlan, parseTaskContext } from '../hooks/contract'
 import { applyMove, parseLine, portFor, textOf } from '../hooks/register'
@@ -345,4 +345,23 @@ test('applyMove keeps where a box was dropped, puts one or all back, refuses jun
   expect(parseLine('{"move":"CAO-1 3 4"}')).toEqual({ move: 'CAO-1 3 4' })
   expect(parseLine('{"refresh":"all"}')).toEqual({ refresh: 'all' })
   expect(parseLine('{"refresh":"/plans/a.md"}')).toEqual({ refresh: '/plans/a.md' })
+})
+
+test('a sub-ticket read names its parent, and shows under it before the parent is read again', async () => {
+  const child = (key: string) => ['## 1. IDENTITY', '', `- Clé : ${key}`, `- Titre : [braze_templates] ${key} title`, '- Statut : planning', '', '## 3. PARENT', '', 'Cette tâche est une sous-tâche de **CAO-219** — <untrusted id="1" source="mcp">', 'Epic', '</untrusted-1> (étape : planning).', '', '**Plan de CAO-219 — révision 1** …', '- **CAO-999** inside the parent plan', '', '## 4. PLAN', '', 'no header', ''].join('\n')
+  expect(parentOf(child('CAO-328'))).toBe('CAO-219')
+  expect(parentOf(context('CAO-219'))).toBe(undefined)
+  const map = { ...emptyMap('/w'), sources: [{ ref: 'CAO-219', kind: 'obeya' as const, addedAt: '' }] }
+  const contexts = {
+    'CAO-219': { text: context('CAO-219', { children: [['CAO-220', 'a', 'done']] }), at: 1 },
+    'CAO-220': { text: context('CAO-220'), at: 2 },
+    'CAO-328': { text: child('CAO-328'), at: 3 },
+    'CAO-500': { text: child('CAO-500').replace('CAO-219', 'CAO-400'), at: 3 },
+  }
+  const data = buildPlan({ map, contexts, files: {}, extracted: [], prs: {} })
+  expect(data.tickets.map(t => t.key)).toEqual(['CAO-220', 'CAO-328'])
+  expect(data.tickets[1]?.parent).toBe('CAO-219')
+  expect(data.tickets[1]?.status).toBe('planning')
+  const alone = buildPlan({ map: { ...map, sources: [{ ...map.sources[0]!, children: false }] }, contexts, files: {}, extracted: [], prs: {} })
+  expect(alone.tickets.map(t => t.key)).toEqual(['CAO-219'])
 })

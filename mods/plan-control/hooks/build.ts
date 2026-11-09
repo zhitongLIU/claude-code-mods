@@ -236,9 +236,12 @@ export function buildPlan(input: BuildInput): PlanData {
     }
     const own = ctx.get(s.ref)
     const kids = own?.c.children ?? []
-    if (s.children !== false && kids.length) {
+    // sub-tickets created after the parent was read: their own read names it, its DECOMPOSITION does not yet
+    const late = s.children === false ? [] : Object.keys(contexts).filter(k => k !== s.ref && !kids.some(x => x.key === k) && parentOf(contexts[k]!.text) === s.ref).sort()
+    if (s.children !== false && (kids.length || late.length)) {
       epics.push({ key: s.ref, title: own?.c.title ?? s.ref, url: ticketUrl.replace('{key}', s.ref) })
       for (const k of kids) obeya(k.key, { key: s.ref, at: own?.at ?? 0, title: k.title, status: k.status })
+      for (const k of late) obeya(k, { key: s.ref, at: 0, title: k, status: 'loading' })
     } else obeya(s.ref)
   }
 
@@ -276,6 +279,12 @@ export function parseRefs(args: string): { keys: string[]; paths: string[]; only
     else paths.push(w)
   }
   return { keys, paths, only }
+}
+
+// The parent a ticket read names, from its PARENT section's first bold key (the parent's own plan follows it there).
+export function parentOf(text: string) {
+  const section = /^## \d+\. PARENT\s*$([\s\S]*?)(?=^## \d+\. |(?![\s\S]))/m.exec(text)?.[1]
+  return section ? /\*\*([A-Z][A-Z0-9]+-\d+)\*\*/.exec(section)?.[1] : undefined
 }
 
 // The field a delta line is about: "+ deferred_payment.verification_state: enum" → deferred_payment.verification_state.

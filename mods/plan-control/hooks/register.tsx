@@ -9,7 +9,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Band } from '../types'
-import { buildPlan, emptyMap, fixPrompt, KEY_RE, parsePrAction, parseRefs, summarize } from './build'
+import { buildPlan, emptyMap, fixPrompt, KEY_RE, parentOf, parsePrAction, parseRefs, summarize } from './build'
 import type { Extracted, MapFile, PlanData, PrAction, PrRow, PrStatus } from './build'
 
 const STALE_MS = 10 * 60_000 // /plan-control refresh reads a cached Obeya ticket again past this age
@@ -378,6 +378,9 @@ async function context($: EngineInterface, key: string, into: Record<string, { t
   return into[key]
 }
 
+// The parent each cached ticket names, by the file's mtime, so the cache is read once per change.
+const parentByKey = new Map<string, { mtime: number; parent?: string }>()
+
 // Everything buildPlan needs, read from disk; pull requests from the per-repo cache.
 async function collectPlan($: EngineInterface): Promise<PlanData> {
   const contexts: Record<string, { text: string; at: number }> = {}
@@ -392,6 +395,20 @@ async function collectPlan($: EngineInterface): Promise<PlanData> {
     // sub-tickets: their own cached reads, when there are some
     for (const m of own?.text.matchAll(/- \*\*([A-Z][A-Z0-9]+-\d+)\*\*/g) ?? []) await context($, m[1] as string, contexts)
   }
+  // sub-tickets created after their parent was read: the parent's list misses them, their own read names it
+  const parents = new Set(s.map.sources.filter(x => x.kind === 'obeya' && x.children !== false).map(x => x.ref))
+  if (parents.size)
+    for (const f of ((await $.fs.list(dirs().cache).catch(() => [])) ?? []).filter(x => x.kind === 'file' && x.name.endsWith('.md'))) {
+      const key = f.name.slice(0, -3)
+      if (contexts[key] || !KEY_RE.test(key)) continue
+      let known = parentByKey.get(key)
+      if (known?.mtime !== f.mtimeMs) {
+        const text = await $.fs.read(`${dirs().cache}/${f.name}`).catch(() => undefined)
+        known = { mtime: f.mtimeMs, parent: typeof text === 'string' ? parentOf(text) : undefined }
+        parentByKey.set(key, known)
+      }
+      if (known.parent && parents.has(known.parent)) await context($, key, contexts)
+    }
   const extracted: Extracted[] = []
   for (const f of ((await $.fs.list(dirs().extracted).catch(() => [])) ?? []).filter(x => x.kind === 'file' && x.name.endsWith('.json'))) {
     const x = await readJson<Extracted>($, `${dirs().extracted}/${f.name}`)
