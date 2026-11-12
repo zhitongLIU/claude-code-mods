@@ -16,7 +16,7 @@ let mockClock: any
 const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 120 } }
 
 // Stands for the engine beneath the mod.
-function engine(on: any, opts: { cmux?: boolean; focus?: string; git?: (argv: string[]) => string | undefined } = {}) {
+function engine(on: any, opts: { cmux?: boolean; orca?: boolean; focus?: string; git?: (argv: string[]) => string | undefined } = {}) {
   const runs: string[][] = []
   const models: number[] = []
   const writes: Record<string, string> = {}
@@ -30,7 +30,13 @@ function engine(on: any, opts: { cmux?: boolean; focus?: string; git?: (argv: st
   on('tool.call', () => ({ result: {}, text: 'ok' }))
   on('fs.read', (_$: any, e: any) => ({ value: e.path.endsWith('login.tsx') ? "import { start } from '../auth/session'\n" : '' }))
   on('fs.write', (_$: any, e: any) => ((writes[e.path] = e.text), { value: undefined }))
-  on('env.get', (_$: any, e: any) => ({ value: e.name === 'CMUX_WORKSPACE_ID' ? (opts.cmux ? 'ws' : undefined) : '/tmp/' }))
+  const env = (name: string) => {
+    if (name === 'CMUX_WORKSPACE_ID') return opts.cmux ? 'ws' : undefined
+    if (name === 'ORCA_TERMINAL_HANDLE') return opts.orca ? 'term_1' : undefined
+    if (name.startsWith('ORCA_') || name === 'MODS_MUX') return undefined
+    return '/tmp/'
+  }
+  on('env.get', (_$: any, e: any) => ({ value: env(e.name) }))
   on('process.run', (_$: any, e: any) => {
     runs.push(e.argv)
     const out = e.argv[0] === 'git' || e.argv[0] === 'gh' ? opts.git?.(e.argv) : e.argv[1] === 'identify' ? opts.focus : ''
@@ -244,6 +250,14 @@ describe('mission-control', () => {
     await $.command.run({ command: 'mission', args: '' } as any)
     expect(runs.some(a => a[0] === 'open' && String(a[1]).endsWith('/index.html'))).toBe(true)
     expect(runs.some(a => a[0] === 'cmux')).toBe(false) // outside cmux nothing of cmux is touched
+
+    // Inside Orca it opens in a tab of Orca's own browser.
+    opts.orca = true
+    runs.length = 0
+    await $.command.run({ command: 'mission', args: '' } as any)
+    expect(runs.some(a => a[0] === 'orca' && a.slice(1, 3).join(' ') === 'tab create' && a.includes('--json') && String(a[a.indexOf('--url') + 1]).endsWith('/index.html'))).toBe(true)
+    expect(runs.some(a => a[0] === 'open')).toBe(false)
+    opts.orca = false
     await $.command.run({ command: 'mission', args: 'off' } as any)
     const before = writes['/tmp/mission-control/s/data.js']
     await $.tool.call({ tool: 'Read', file_path: '/repo/src/zzz.ts' } as any)

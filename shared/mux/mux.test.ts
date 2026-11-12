@@ -1,0 +1,94 @@
+import { describe, expect, test } from 'claude-code/testing'
+
+import { detectMux, openPage } from './index'
+
+const URL = 'http://127.0.0.1:4000/t/'
+const APP_CLI = '/Applications/Orca.app/Contents/Resources/bin/orca'
+
+// Stands for the engine the hooks get: the environment given, and every command run recorded. `run` answers a
+// command with its exit code and output; throwing stands for a command that is not there. Nothing really runs.
+function engine(env: Record<string, string>, run: (argv: string[]) => { exitCode: number; stdout?: string } = () => ({ exitCode: 0 })) {
+  const runs: string[][] = []
+  const $ = {
+    env: { get: async (name: string) => env[name] },
+    process: {
+      run: async (argv: string[]) => {
+        runs.push(argv)
+        const r = run(argv)
+        return { exitCode: r.exitCode, stdout: r.stdout ?? '', stderr: '' }
+      },
+    },
+  } as any
+  return { $, runs }
+}
+
+describe('mux', () => {
+  test('detection order: Orca, then cmux, then the default browser', async () => {
+    const env: Record<string, string> = { ORCA_TERMINAL_HANDLE: 'term_1', CMUX_WORKSPACE_ID: 'ws' }
+    const { $ } = engine(env)
+    expect((await detectMux($))).toBe('orca')
+    delete env.ORCA_TERMINAL_HANDLE
+    expect((await detectMux($))).toBe('cmux')
+    delete env.CMUX_WORKSPACE_ID
+    expect((await detectMux($))).toBe('browser')
+  })
+
+  test('MODS_MUX picks the backend; an unknown name is ignored', async () => {
+    const env: Record<string, string> = { ORCA_TERMINAL_HANDLE: 'term_1', MODS_MUX: 'browser' }
+    const { $ } = engine(env)
+    expect((await detectMux($))).toBe('browser')
+    env.MODS_MUX = ' CMUX '
+    expect((await detectMux($))).toBe('cmux')
+    env.MODS_MUX = 'tmux'
+    expect((await detectMux($))).toBe('orca')
+  })
+
+  test('Orca opens a tab of its browser with $ORCA_CLI_BIN_DIR first', async () => {
+    const { $, runs } = engine({ ORCA_TERMINAL_HANDLE: 'term_1', ORCA_CLI_BIN_DIR: '/opt/orca/bin/' })
+    expect(await openPage($, URL)).toBe(true)
+    expect(runs).toEqual([['/opt/orca/bin/orca', 'tab', 'create', '--url', URL, '--json']])
+  })
+
+  test('Orca: a CLI not on PATH is looked for in the app', async () => {
+    const { $, runs } = engine({ ORCA_TERMINAL_HANDLE: 'term_1' }, argv => {
+      if (argv[0] === 'orca') throw new Error('spawn orca ENOENT')
+      return { exitCode: 0 }
+    })
+    expect(await openPage($, URL)).toBe(true)
+    expect(runs.map(a => a[0])).toEqual(['orca', APP_CLI])
+    expect(runs.at(-1)).toEqual([APP_CLI, 'tab', 'create', '--url', URL, '--json'])
+  })
+
+  test('Orca: a failed tab falls back to the default browser', async () => {
+    const { $, runs } = engine({ ORCA_TERMINAL_HANDLE: 'term_1' }, argv => ({ exitCode: argv[0] === 'orca' ? 2 : 0 }))
+    expect(await openPage($, URL)).toBe(true)
+    expect(runs).toEqual([['orca', 'tab', 'create', '--url', URL, '--json'], ['open', URL]]) // one failed run is enough: no second CLI
+  })
+
+  test('Orca: no CLI anywhere falls back to the default browser', async () => {
+    const { $, runs } = engine({ ORCA_TERMINAL_HANDLE: 'term_1' }, argv => ({ exitCode: argv[0] === 'open' ? 0 : 127 }))
+    expect(await openPage($, URL)).toBe(true)
+    expect(runs.map(a => a[0])).toEqual(['orca', APP_CLI, 'open'])
+  })
+
+  test('cmux opens a focused split in the workspace in focus, not the one in the env', async () => {
+    const { $, runs } = engine({ CMUX_WORKSPACE_ID: 'stale' }, argv => (argv[1] === 'identify' ? { exitCode: 0, stdout: JSON.stringify({ focused: { workspace_ref: 'workspace:13' } }) } : { exitCode: 0 }))
+    expect(await openPage($, URL)).toBe(true)
+    expect(runs).toEqual([['cmux', 'identify'], ['cmux', 'browser', 'open-split', URL, '--focus', 'true', '--workspace', 'workspace:13']])
+  })
+
+  test('cmux: no focused workspace leaves the split where cmux sends it, and a failure is not retried elsewhere', async () => {
+    const { $, runs } = engine({ CMUX_WORKSPACE_ID: 'ws' }, () => ({ exitCode: 1 }))
+    expect(await openPage($, URL)).toBe(false)
+    expect(runs).toEqual([['cmux', 'identify'], ['cmux', 'browser', 'open-split', URL, '--focus', 'true']])
+  })
+
+  test('the default browser opens the page with open, and says when it could not', async () => {
+    let code = 0
+    const { $, runs } = engine({}, () => ({ exitCode: code }))
+    expect(await openPage($, URL)).toBe(true)
+    expect(runs).toEqual([['open', URL]])
+    code = 1
+    expect(await openPage($, URL)).toBe(false)
+  })
+})
