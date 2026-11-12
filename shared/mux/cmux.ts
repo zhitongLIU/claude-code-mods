@@ -1,0 +1,29 @@
+import type { EngineInterface } from 'claude-code'
+
+// A cmux browser split, focused.
+export const name = 'cmux' as const
+
+export async function detect($: EngineInterface) {
+  return Boolean(await $.env.get('CMUX_WORKSPACE_ID'))
+}
+
+// The workspace cmux has in focus, or undefined when it cannot say (the split then goes where cmux would send it).
+async function focusedWorkspace($: EngineInterface) {
+  const r = await $.process.run(['cmux', 'identify'], { timeoutMs: 3_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
+  if (r.exitCode !== 0) return undefined
+  try {
+    const ref = (JSON.parse(r.stdout) as { focused?: { workspace_ref?: unknown } }).focused?.workspace_ref
+    return typeof ref === 'string' && /^[\w:-]+$/.test(ref) ? ref : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export async function openPage($: EngineInterface, url: string) {
+  // cmux splits go to $CMUX_WORKSPACE_ID, fixed when Claude Code started: stale once the tab moved or the
+  // session was resumed elsewhere. The workspace in focus is the one the person just typed the command in.
+  const workspace = await focusedWorkspace($)
+  const argv = ['cmux', 'browser', 'open-split', url, '--focus', 'true', ...(workspace ? ['--workspace', workspace] : [])]
+  const r = await $.process.run(argv, { timeoutMs: 10_000 }).catch(() => ({ exitCode: 1 }))
+  return r.exitCode === 0
+}

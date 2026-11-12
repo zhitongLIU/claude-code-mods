@@ -13,6 +13,7 @@ import { addedDiff } from './diff'
 import { byPath, dismiss, markStale, merge, normalize, parseFindings, prRef, reviewPayload, splitByDiff } from './findings'
 import { HLJS } from './vendor-hljs'
 import { mapData } from './map'
+import { openPage as openUrl } from './mux'
 import { TEMPLATE } from './template'
 import { label, lines, summary } from './tree'
 
@@ -621,18 +622,6 @@ async function writePage($: EngineInterface) {
   page.last = json
 }
 
-// The workspace cmux has in focus, or undefined when it cannot say (the split then goes where cmux would send it).
-async function focusedWorkspace($: EngineInterface) {
-  const r = await $.process.run(['cmux', 'identify'], { timeoutMs: 3_000 }).catch(() => ({ exitCode: 1, stdout: '' }))
-  if (r.exitCode !== 0) return undefined
-  try {
-    const ref = (JSON.parse(r.stdout) as { focused?: { workspace_ref?: unknown } }).focused?.workspace_ref
-    return typeof ref === 'string' && /^[\w:-]+$/.test(ref) ? ref : undefined
-  } catch {
-    return undefined
-  }
-}
-
 // Starts the page's local server once; resolves its address, or undefined where Node is missing or it does not come up
 // (the page then opens from disk and keeps its clipboard buttons). A line the page sent is submitted as a prompt.
 function startBridge($: EngineInterface): Promise<string | undefined> {
@@ -671,15 +660,9 @@ function startBridge($: EngineInterface): Promise<string | undefined> {
   return bridge.starting
 }
 
-// In a cmux split when this runs inside cmux, otherwise in the default browser.
+// In Orca's browser inside Orca, in a cmux split inside cmux, otherwise in the default browser (hooks/mux).
 // Without a tab the page opens on the one the person used last.
 async function openPage($: EngineInterface, tab?: 'code', base?: string) {
   const url = `${base ? `${base}/` : `file://${encodeURI(await pageDir($))}/index.html`}${tab ? `#${tab}` : ''}`
-  const inCmux = Boolean(await $.env.get('CMUX_WORKSPACE_ID'))
-  // cmux splits go to $CMUX_WORKSPACE_ID, fixed when Claude Code started: stale once the tab moved or the
-  // session was resumed elsewhere. The workspace in focus is the one the person just typed /mission in.
-  const workspace = inCmux ? await focusedWorkspace($) : undefined
-  const argv = inCmux ? ['cmux', 'browser', 'open-split', url, '--focus', 'true', ...(workspace ? ['--workspace', workspace] : [])] : ['open', url]
-  const r = await $.process.run(argv, { timeoutMs: 10_000 }).catch(() => ({ exitCode: 1 }))
-  return r.exitCode === 0 ? `Opened ${url}` : `Could not open a browser. Open ${url} yourself.`
+  return (await openUrl($, url)) ? `Opened ${url}` : `Could not open a browser. Open ${url} yourself.`
 }

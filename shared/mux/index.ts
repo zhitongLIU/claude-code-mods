@@ -1,0 +1,48 @@
+// Opens a mod's page where the person is working: Orca's browser, a cmux split, or else the default browser.
+// The canonical source is shared/mux/ at the repo root; scripts/sync-shared.sh copies it into each mod.
+//
+// Each backend is a file exporting the same three things: `name`, `detect($)` (true when Claude Code runs inside
+// it) and `openPage($, url)` (true when the page opened). The hooks compiler lets $ be passed only to a function
+// called by its own name, never through a list, an object or a namespace, so a new backend is one more file, one
+// more import line, one more name in MUXES and one more case in each switch below.
+import type { EngineInterface } from 'claude-code'
+
+import { detect as detectBrowser, name as BROWSER, openPage as openBrowser } from './browser'
+import { detect as detectCmux, name as CMUX, openPage as openCmux } from './cmux'
+import { detect as detectOrca, name as ORCA, openPage as openOrca } from './orca'
+
+// In detection order: the first that detects wins. The default browser always does.
+export const MUXES = [ORCA, CMUX, BROWSER] as const
+export type Mux = (typeof MUXES)[number]
+
+async function detects($: EngineInterface, mux: Mux) {
+  switch (mux) {
+    case 'orca':
+      return detectOrca($)
+    case 'cmux':
+      return detectCmux($)
+    case 'browser':
+      return detectBrowser($)
+  }
+}
+
+// Where pages open: $MODS_MUX (orca, cmux or browser) when it names one, else the first detected.
+export async function detectMux($: EngineInterface): Promise<Mux> {
+  const forced = ((await $.env.get('MODS_MUX')) ?? '').trim().toLowerCase()
+  const named = MUXES.find(m => m === forced)
+  if (named) return named
+  for (const mux of MUXES) if (await detects($, mux).catch(() => false)) return mux
+  return 'browser'
+}
+
+// True when the page opened.
+export async function openPage($: EngineInterface, url: string): Promise<boolean> {
+  switch (await detectMux($)) {
+    case 'orca':
+      return openOrca($, url)
+    case 'cmux':
+      return openCmux($, url)
+    case 'browser':
+      return openBrowser($, url)
+  }
+}
