@@ -6,7 +6,7 @@ Zhitong's Claude Code mods. Inspired by [hamzafer/claude-code-mods](https://gith
 
 `/mission` opens a live web page with two tabs, **Who** (the main agent, its subagents and every tool call) and **Code** (a map of the files Claude reads and edits, the imports between them, and one line on why each changed). The page refreshes itself every second. There is no side pane.
 
-It opens in a cmux browser split when run inside cmux, otherwise in your default browser.
+It opens in a tab of Orca's own browser when run inside [Orca](#where-pages-open), in a cmux browser split when run inside cmux, otherwise in your default browser. `/plan-control` opens its page the same way.
 
 ![The code map with the diff drawer open and a comment being written](screen_shots/screen1.png)
 
@@ -75,6 +75,7 @@ To push findings to the pull request, tick the ones you approve (or **Select fin
 | `hooks/diff.ts` | Parses a unified diff into numbered rows and formats review comments. Also runs in the page. |
 | `hooks/hl.ts`, `hooks/highlight.ts` | Syntax colours in the diff drawer: `hl.ts` feeds each hunk to highlight.js, `highlight.ts` is the small fallback tint. Both also run in the page. |
 | `hooks/vendor-hljs.ts` | [highlight.js](https://highlightjs.org) 11.11.1 (common languages), vendored unchanged for offline use. BSD-3-Clause, © 2006 Ivan Sagalaev. |
+| `hooks/mux/` | Where the page opens. Generated from `shared/mux/`: see [Where pages open](#where-pages-open). |
 
 </details>
 
@@ -164,6 +165,27 @@ CLAUDE_CONFIG_DIR=$(mktemp -d) claude plugin test mods/plan-control
 ```
 
 </details>
+
+## Where pages open
+
+Both mods open their page through one adapter, picked in this order:
+
+| When | Where | How |
+| --- | --- | --- |
+| `$ORCA_TERMINAL_HANDLE` is set | A tab of Orca's browser | `orca tab create --url <url> --json`. The CLI is looked for in `$ORCA_CLI_BIN_DIR`, on `PATH`, then in `/Applications/Orca.app/Contents/Resources/bin`. If it fails, the default browser. |
+| `$CMUX_WORKSPACE_ID` is set | A focused cmux browser split | `cmux browser open-split <url> --focus true`, in the workspace `cmux identify` says is in focus. |
+| Otherwise | The default browser | `open <url>` |
+
+Set `MODS_MUX=orca`, `cmux` or `browser` to choose one yourself.
+
+The adapter lives once in `shared/mux/`, one file per backend. A mod is installed from its own folder and its hooks may import nothing outside it, so each mod carries a generated copy in `hooks/mux/`. Edit `shared/mux/`, never the copies, then:
+
+```sh
+scripts/sync-shared.sh          # write the copies
+scripts/sync-shared.sh --check  # exit 1 when a copy differs from shared/; run it before committing
+```
+
+The adapter's tests (`shared/mux/mux.test.ts`) are copied with it, so `claude plugin test` runs them in each mod.
 
 ## License
 
